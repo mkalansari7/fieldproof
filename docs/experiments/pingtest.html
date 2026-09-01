@@ -1,0 +1,18 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<h2>Ping gap test</h2>
+<p id="status">running…</p>
+<ol id="log" reversed></ol>
+<script>
+  let last = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const gap = ((now - last) / 1000).toFixed(1);
+    last = now;
+    const li = document.createElement("li");
+    li.textContent =
+      new Date(now).toLocaleTimeString() + " — gap: " + gap + "s";
+    if (gap > 20) li.style.cssText = "color:red;font-weight:bold";
+    document.getElementById("log").prepend(li);
+  }, 15000);
+</script>
