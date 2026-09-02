@@ -50,8 +50,11 @@ implementation code was written.
   window are the same window. The contradiction was mine; the catch was the AI's.
 - Skill also flagged vocabulary drift in my own edit: I wrote "evidence
   sufficiency" in ADR-0005's breakdown list, which is not a `CONTEXT.md` term
-  (sufficiency is a threshold test, not a displayed quantity). Reverted to
-  "conclusive ping count".
+  (sufficiency is a threshold test, not a displayed quantity). Reverted to "conclusive ping count";
+  final wording keeps both — attributed time inside/outside and dwell ratio lead the
+  breakdown (the quantities the verdict is computed from), with
+  conclusive ping count as supporting detail. Matches the verdict
+  table's stored columns.
 - Kept over the skill's original: my "score client-side, never upload the trail"
   alternative in ADR-0005 — a _more_ privacy-protective option rejected on
   security grounds, which the skill had not considered.
@@ -82,7 +85,7 @@ implementation existed.
   visits it was decided about. The duration branch survived only for the narrow
   180–300s band.
 - **The tell.** The spec kept the grilling's own justifying sentence — "a
-  sprint-through *is* evidence, so it is `suspicious`, not `unverifiable`" —
+  sprint-through _is_ evidence, so it is `suspicious`, not `unverifiable`" —
   directly beneath a code block that made it unreachable. Retained rationale
   sitting under reversed logic is the signature of a mechanical reordering, not
   a considered one. Worth generalising: prose and pseudocode in the same section
@@ -98,7 +101,7 @@ implementation existed.
   pings without shortening the visit. So ADR-0003's protections survive intact,
   and the reorder touches only visits that are both too short for the task and
   too thin on pings. The decisive point is game-theoretic: under sufficiency-first
-  a lazy participant scores *better* by sprinting through (`unverifiable`) than by
+  a lazy participant scores _better_ by sprinting through (`unverifiable`) than by
   staying away (`suspicious`), which makes brevity the cheapest laundering
   strategy against the one rule the product exists to enforce.
 - **Counter-case, accepted not dismissed.** Permission denied on a 60-second
@@ -106,11 +109,11 @@ implementation existed.
   `spec.md` §3 rather than argued away: no innocent account exists of a 300-second
   task inside a 60-second visit, and false starts do not reach verification at all
   (an abandoned visit never gets a verdict), so a short visit is only judged when
-  the participant explicitly ended it *and* reported against it.
+  the participant explicitly ended it _and_ reported against it.
 - **Applied to:** `spec.md` §3, `CONTEXT.md` (`Unverifiable`/`Suspicious` — the
   old wording defined `suspicious` purely in terms of presence, which the reorder
   outgrows), ADR-0003 (the "mechanism that produces `unverifiable`" claim now
-  states *why* it survives duration-first), `docs/design.md` (the "silence feeds
+  states _why_ it survives duration-first), `docs/design.md` (the "silence feeds
   UNVERIFIABLE, never SUSPICIOUS" measurement note), issue 02's table.
   Issues 04 and 08 turned out not to encode the order at all, and the §9 seed
   scenarios demo `EXPIRED`/`UNREPORTED` rather than verdicts — no change needed
@@ -127,3 +130,61 @@ implementation existed.
   from first-and-last ping would score every permission-denied visit as
   zero-duration and therefore `suspicious`. Signature now names it explicitly and
   issue 02 calls out the trap.
+
+## 2026-09-02 — build, issue 02 (/tdd)
+
+- Agent's first distance test was circular: it asserted a value
+  computed by the same spherical method as the code under test — a
+  test that could never fail. Caught by the agent itself, and all
+  distance expectations rederived from an independent formula
+  (Vincenty on WGS84), with tolerance (0.7%) set to what the
+  spherical model honestly achieves.
+- Agent deviated from the issue's stated signature deliberately:
+  `AssignmentTerms` instead of `target`, because CONTEXT.md defines
+  Target Location as coordinates + radius, and verify never sees
+  coordinates. Flagged rather than silently applied; accepted — the
+  glossary held against the ticket.
+- Agent added one rule beyond the spec: verify sorts the trail by
+  received_at rather than trusting caller order (unsorted input
+  produced negative attributed time). Justified via ADR-0002:
+  replay against stored rows makes query order not verify's to
+  assume. Accepted.
+- Honest red/green accounting kept: 6 of 13 cycles genuinely red
+  and driving code; the rest green on arrival, recorded as spec
+  pins rather than claimed as TDD theatre.
+
+## 2026-09-02 — issue 02 implemented, then reviewed by me
+
+Built TDD with the tdd skill. Seams were agreed before any test was written,
+which is the step that made the review below cheap: all four findings are about
+the *boundary*, and the boundary was the thing we had argued about first.
+
+- **My finding, and the sharpest one: `min_duration_s` vs `SUFFICIENCY_S`.**
+  `SUFFICIENCY_S` is global, `min_duration_s` is per-assignment, and nothing
+  connected them. Set a two-minute task and `verified` becomes unreachable —
+  attributed time cannot exceed the visit it is measured over, so a flawless
+  120s visit scores `unverifiable` forever. The 300s default hid it completely.
+  The AI's contribution was placing the guard: I had suggested validating on
+  `AssignmentTerms` construction, it argued the check belongs at assignment
+  creation and must **not** live in `verify`, because a later `SUFFICIENCY_S`
+  bump would then raise on every historical visit whose assignment predates it —
+  breaking exactly the replay property ADR-0002 exists for. Correct, and I had
+  not seen it. Now `check_terms()` + `spec.md` §1 invariant.
+- **AI declined to write a test it could not justify.** I flagged
+  `asin(sqrt(h))` as a domain risk. It searched 3M near-antipodal pairs, found
+  `h` peaks one ulp above 1.0 and `sqrt` rounds it back to exactly 1.0, and said
+  it could not produce the crash. It added the `min(1.0, ...)` clamp anyway on
+  the grounds that `sin`/`cos` are platform libm calls with no correct-rounding
+  guarantee, but tested the antipodal *distance* rather than asserting an
+  exception that never fires. Right call — the test I half-asked for would have
+  been theatre.
+- **`haversine_m` moved to `geo.py`.** My point, and it turned out stronger than
+  I made it: `verify` never calls it. Zero internal callers is the tell. Ingest
+  now does geodesy without importing the pure judgement core.
+- **Two invariants documented rather than enforced.** Negative `unattributed_s`
+  (pings outside the visit window) is a caller precondition on `verify`'s
+  docstring: the function cannot distinguish a late write from a wrong duration,
+  and clamping would bury the discrepancy. The unattributed class-transition gap
+  now carries its rationale in code — we do not split a crossing interval because
+  we never observe the crossing, and an invented number would sit in a field the
+  business reads as measured.

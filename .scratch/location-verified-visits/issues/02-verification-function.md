@@ -54,3 +54,46 @@ Dwell gate (runs last):
 - Every ping `accuracy: 3` but 500m away, 10 min → `suspicious`. Fake precision
   earns nothing (ADR-0003).
 - Boundary pair: `dwell_ratio` 0.79 and 0.80 on a 600s visit.
+
+## Comments
+
+**2026-09-02 — implemented (TDD).** `src/fieldproof/verification.py`,
+`tests/test_verification.py`. 31 tests; ruff, ruff format, mypy strict and pytest
+all green.
+
+Seams confirmed with the user before any test was written: `verify()`,
+`classify()` and `haversine_m()` are all public — ingest is a second caller of the
+latter two (spec.md §2 computes `distance_m` and `classification` at write).
+
+Two interface decisions worth recording:
+
+- **Pings reach `verify` as `(received_at, distance_m, accuracy_m)`, not
+  pre-classified.** `classification` depends on `radius_m`, so carrying it in
+  would freeze a verdict to the radius in force at write time and make ADR-0002's
+  "what would this have been at 150m?" unanswerable. `verify` classifies;
+  `haversine_m` stays at ingest. Covered by
+  `test_the_same_trail_rescores_differently_under_a_wider_radius`.
+- **The second parameter is `terms: AssignmentTerms(radius_m, min_duration_s)`,
+  not `target`.** `CONTEXT.md` defines Target Location as coordinates plus
+  radius; `min_duration_s` is a task fact, not a location fact, and `verify`
+  never needs the coordinates. Naming it `target` would have put a banned meaning
+  on a glossary term.
+
+One rule implemented beyond the issue's table: `verify` sorts by `received_at`
+rather than trusting caller order. Unsorted input made the pairwise walk attribute
+*negative* time, which no gate is written to survive.
+
+**2026-09-02 — review round.** Four findings, all at the module boundary. 37
+tests; four gates green.
+
+- `min_duration_s < SUFFICIENCY_S` makes `verified` unreachable. Guard is
+  `check_terms()`, raising `IncoherentTermsError`, called at **assignment
+  creation** — see `spec.md` §1 for the invariant and why `verify` deliberately
+  does not raise (issue 01 should call it; issue 08 must not).
+- `haversine_m` and `EARTH_RADIUS_M` moved to `src/fieldproof/geo.py`. `verify`
+  never called it, so ingest no longer imports the judgement core for geodesy.
+  `asin(min(1.0, sqrt(h)))` guards the near-antipodal domain edge.
+- Negative `unattributed_s` from out-of-window pings: documented as a caller
+  precondition on `verify`'s docstring, not clamped. **The trail query in issue
+  08 is where the window gets enforced.**
+- Unattributed class-transition gaps now carry their rationale in code.

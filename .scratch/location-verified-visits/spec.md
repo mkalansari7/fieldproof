@@ -26,6 +26,19 @@ and the reason config is split rather than global):
 | `radius_m` | `100` | **Must clear the indoor accuracy floor.** Conclusive-inside needs `d + a < R`; indoor accuracy runs 30–100m, so R=50 makes every visit unverifiable. A kiosk and a shopping mall genuinely differ. |
 | `min_duration_s` | `300` | A coffee run and a bank branch audit are not the same task. |
 
+**Invariant: `min_duration_s >= SUFFICIENCY_S`.** These two are set in different
+places — one per assignment, one in global config — and the interaction is not
+obvious. Attributed time is measured over the visit, so it can never exceed the
+visit duration. A two-minute task against a 180s sufficiency threshold therefore
+admits visits that clear the duration gate and *cannot* clear the sufficiency
+one: a flawless visit, every ping conclusively inside, comes back `unverifiable`,
+and the business sees an honest participant it can never verify. The default of
+300 hides this. Enforced at assignment creation by `check_terms()`, which raises
+`IncoherentTermsError`; deliberately **not** enforced inside `verify()`, because
+raising there would turn a later `SUFFICIENCY_S` increase into an outage across
+every stored visit whose assignment predates it, and replay under a newer config
+is the property ADR-0002 exists to protect.
+
 Operational timings:
 
 | Constant | Value | Why |
