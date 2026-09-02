@@ -6,7 +6,7 @@ Blocked by: 06, 08
 Consumes the SSE stream: render the snapshot, apply deltas.
 
 Shows per visit: assignment, state, verdict, and the breakdown — attributed time,
-dwell ratio, conclusive ping count, session duration. Plus attempt count per
+dwell ratio, conclusive ping count, visit duration. Plus attempt count per
 assignment, which is signal in its own right (ADR-0001).
 
 **No polyline, ever** (ADR-0005). The business sees the verdict and its

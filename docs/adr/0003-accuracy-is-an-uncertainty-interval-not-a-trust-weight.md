@@ -24,3 +24,10 @@ participant, which is the correct treatment for the indoor case — and indoors 
 where mystery shopping happens, so it is the normal case, not the edge case. This
 is also the mechanism that produces `unverifiable` rather than `suspicious` when
 a participant's hardware or building is the problem.
+
+That claim survives the judgement order in `spec.md` §3, where the
+minimum-duration test runs ahead of the sufficiency test. Bad accuracy, a denied
+permission and a pocketed phone all destroy pings without shortening the visit,
+so a participant whose hardware failed still clears the duration gate and still
+lands on `unverifiable`. Duration-first reclassifies only visits that were *also*
+too short for the task — which no hardware or building problem produces.

@@ -63,3 +63,67 @@ implementation code was written.
   Decided: pre-assigned for the slice, marketplace named as the
   likely real-product model in the design writeup's pushback
   section.
+
+## 2026-09-02 — spec generation reversed a settled decision
+
+Caught by cross-reading `spec.md` against Tuesday's grilling, before any
+implementation existed.
+
+- **What happened.** The grilling settled the judgement order as duration first:
+  minimum-duration failure is `suspicious`, because "a 90-second visit is
+  evidence, not an absence of it". `spec.md` §3 shipped the opposite order —
+  sufficiency → duration → dwell — and supplied its own rationale for it
+  ("with too little accountable time there is nothing to judge"), so it read as
+  reasoned rather than as a slip. Nothing flagged the change.
+- **Why it mattered.** The reversal was self-defeating in a way the prose hid.
+  Under sufficiency-first, a 90-second all-inside sprint has ~90s attributed,
+  fails the sufficiency gate, and returns `unverifiable` — it never reaches the
+  duration check. The grilling's position had become unreachable for exactly the
+  visits it was decided about. The duration branch survived only for the narrow
+  180–300s band.
+- **The tell.** The spec kept the grilling's own justifying sentence — "a
+  sprint-through *is* evidence, so it is `suspicious`, not `unverifiable`" —
+  directly beneath a code block that made it unreachable. Retained rationale
+  sitting under reversed logic is the signature of a mechanical reordering, not
+  a considered one. Worth generalising: prose and pseudocode in the same section
+  are not cross-checked by the thing that writes them.
+- **How close it came to being load-bearing.** Issue 02's first test case, "all
+  pings inside spanning 90s → `unverifiable`", had already encoded the reversal
+  as an assertion. The next step in the plan was to build issue 02 first, on
+  Wednesday. One more step and the reversed decision would have been frozen as a
+  passing test with a rationale attached, which is the hardest kind to reopen.
+- **Decided.** Duration first. The argument that settles it is orthogonality:
+  `visit_duration_s` is server-clock evidence, and every mechanism that justifies
+  `unverifiable` — pocketed phone, denied permission, indoor accuracy — destroys
+  pings without shortening the visit. So ADR-0003's protections survive intact,
+  and the reorder touches only visits that are both too short for the task and
+  too thin on pings. The decisive point is game-theoretic: under sufficiency-first
+  a lazy participant scores *better* by sprinting through (`unverifiable`) than by
+  staying away (`suspicious`), which makes brevity the cheapest laundering
+  strategy against the one rule the product exists to enforce.
+- **Counter-case, accepted not dismissed.** Permission denied on a 60-second
+  visit is now `suspicious` where it used to be `unverifiable`. Recorded in
+  `spec.md` §3 rather than argued away: no innocent account exists of a 300-second
+  task inside a 60-second visit, and false starts do not reach verification at all
+  (an abandoned visit never gets a verdict), so a short visit is only judged when
+  the participant explicitly ended it *and* reported against it.
+- **Applied to:** `spec.md` §3, `CONTEXT.md` (`Unverifiable`/`Suspicious` — the
+  old wording defined `suspicious` purely in terms of presence, which the reorder
+  outgrows), ADR-0003 (the "mechanism that produces `unverifiable`" claim now
+  states *why* it survives duration-first), `docs/design.md` (the "silence feeds
+  UNVERIFIABLE, never SUSPICIOUS" measurement note), issue 02's table.
+  Issues 04 and 08 turned out not to encode the order at all, and the §9 seed
+  scenarios demo `EXPIRED`/`UNREPORTED` rather than verdicts — no change needed
+  in either.
+- **Second finding from the same trace, unrelated to the order.** The field was
+  named `session_duration_s`, and `session` is a `CONTEXT.md` banned word for
+  `visit`. It had reached `spec.md` §2, §3 and issue 09 unnoticed. Renamed to
+  `visit_duration_s` while it is still only markdown. Same class of drift the ADR
+  revision pass caught with "evidence sufficiency" — the vocabulary list does not
+  enforce itself, and generated artifacts are where it leaks.
+- **Third finding.** §3 gave the signature as `(trail, target, config)`, with
+  `session_duration_s` appearing in the judge block from nowhere. Harmless under
+  sufficiency-first; fatal under duration-first, where an implementer deriving it
+  from first-and-last ping would score every permission-denied visit as
+  zero-duration and therefore `suspicious`. Signature now names it explicitly and
+  issue 02 calls out the trap.

@@ -8,9 +8,12 @@ Test: page logging a timestamp every 15s, served locally.
   In all cases suspension was total and immediate; ticks resumed
   instantly on return. Gap length ≈ time away, unbounded.
   Consequence: ping silence cannot distinguish "pocketed phone"
-  from "left the site" — timeout set to 15 min and silence feeds
-  UNVERIFIABLE, never SUSPICIOUS. Wake Lock + explicit "keep page
-  open" guidance is the primary mitigation.
+  from "left the site" — timeout set to 15 min, and ping silence
+  on its own feeds UNVERIFIABLE, never SUSPICIOUS. (A visit shorter
+  than min_duration_s is SUSPICIOUS on server-clock evidence alone,
+  per spec.md §3; suspension never shortens a visit, so the two
+  never collide.) Wake Lock + explicit "keep page open" guidance is
+  the primary mitigation.
   Caveat: one device, one browser; Android/Chrome not measured.
 
 ## Scale (to write, day 4)

@@ -71,7 +71,7 @@ verdict
   id, visit_id -> visit UNIQUE
   verdict            verified | suspicious | unverifiable
   dwell_ratio, inside_s, outside_s, unattributed_s, attributed_total_s
-  conclusive_pings, total_pings, session_duration_s
+  conclusive_pings, total_pings, visit_duration_s
   radius_m, min_duration_s              -- snapshotted from assignment
   scoring_config_version, computed_at
 ```
@@ -81,7 +81,12 @@ stored result is traceable to the rules that produced it.
 
 ## 3. Verification algorithm
 
-Pure. No I/O, no clock. `(trail, target, config) -> Verdict`.
+Pure. No I/O, no clock. `(trail, target, visit_duration_s, config) -> Verdict`.
+
+`visit_duration_s` is `ended_at - started_at`, server clock, **passed in — never
+derived from the trail**. The trail is empty in exactly the case where this value
+decides the verdict, so deriving it from first and last ping would collapse the
+zero-ping case into a zero-duration one.
 
 **Classify** (at ingest, stored on the row) — `d` = haversine distance, `a` =
 reported accuracy, `R` = `radius_m`:
@@ -116,16 +121,37 @@ side. Absence of evidence is not evidence.
 attributed_total = inside_s + outside_s
 dwell_ratio      = inside_s / attributed_total   (0 if total == 0)
 
-if attributed_total < SUFFICIENCY_S:          unverifiable
-elif session_duration_s < min_duration_s:     suspicious
-elif dwell_ratio >= DWELL_RATIO_MIN:          verified
-else:                                          suspicious
+if visit_duration_s < min_duration_s:        suspicious
+elif attributed_total < SUFFICIENCY_S:       unverifiable
+elif dwell_ratio >= DWELL_RATIO_MIN:         verified
+else:                                         suspicious
 ```
 
-Sufficiency first: with too little accountable time there is nothing to judge.
-Duration second: a sprint-through *is* evidence, so it is `suspicious`, not
-`unverifiable`. Zero pings (permission denied) falls out as `unverifiable`
-without a special case.
+**Duration first**, and it is the only gate that does not read the trail.
+`visit_duration_s` is server-clock evidence, outside the participant's reach and
+unaffected by every mechanism that justifies `unverifiable`: a pocketed phone, a
+denied permission and a 40m indoor accuracy each destroy pings, and none of them
+shorten the visit. The two tests are therefore orthogonal, and putting duration
+first reclassifies exactly one region — a visit both too short for the task *and*
+too thin on location evidence.
+
+That region is `suspicious`, deliberately. A 90-second all-inside sprint is
+evidence, not an absence of it. Under sufficiency-first it never reaches the
+duration check at all (90s attributed < `SUFFICIENCY_S` → `unverifiable`), which
+makes brevity the cheapest way to launder a visit that was never performed: a
+lazy participant scores strictly better by sprinting through than by staying
+away. A rule this product exists to enforce cannot be gameable in that direction.
+
+Counter-case, recorded rather than dismissed — permission denied on a 60-second
+visit is `suspicious` here and would be `unverifiable` under sufficiency-first.
+Accepted. There is no innocent account of performing a 300-second task inside a
+60-second visit, and the verdict rests on the server clock rather than on the
+missing pings. False starts cost nothing either: an abandoned visit never reaches
+verification (§5), so a short visit is only ever judged when the participant
+explicitly ended it *and* submitted a report against it.
+
+Zero pings on a visit of adequate length still falls out as `unverifiable` with
+no special case: duration passes, then `attributed_total == 0 < SUFFICIENCY_S`.
 
 ## 4. Trust boundary (ingest)
 

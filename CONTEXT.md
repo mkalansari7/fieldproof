@@ -87,11 +87,14 @@ The outcome of verification for a visit: `verified`, `suspicious`, or
 _Avoid_: status, result, flag, score
 
 **Unverifiable**:
-Too little attributed time to judge either way. An absence of evidence.
+Too little attributed time to judge presence either way, on a visit that ran long
+enough for the task. An absence of evidence.
 _Avoid_: failed, invalid, rejected
 
 **Suspicious**:
-Enough evidence to judge, and it argues against presence. Evidence of absence.
+Enough evidence to judge, and it argues against the assignment having been
+performed — attributed time landing mostly outside the radius, or a visit too
+short for the task whatever the pings say. Evidence of absence.
 _Avoid_: fraudulent, fake, rejected
 
 **Scoring Config**:
