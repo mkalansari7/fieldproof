@@ -20,7 +20,7 @@
   layer. The real risk is the async FastAPI work (sweeper, SSE fan-out), so the
   buffer moved to Wednesday and the frontend was compressed instead.
 - AI got a platform fact wrong (Q13): the skill recalled mobile browsers as
-  *throttling* background timers to roughly once a minute. I measured it instead
+  _throttling_ background timers to roughly once a minute. I measured it instead
   of taking it (`docs/experiments/pingtest.html`): iOS Safari suspends JS
   **entirely** on screen lock and on app switch — a single unbounded gap, 297.8s
   for a ~5min lock. Categorically worse than throttling, and it is what set the
@@ -53,5 +53,13 @@ implementation code was written.
   (sufficiency is a threshold test, not a displayed quantity). Reverted to
   "conclusive ping count".
 - Kept over the skill's original: my "score client-side, never upload the trail"
-  alternative in ADR-0005 — a *more* privacy-protective option rejected on
+  alternative in ADR-0005 — a _more_ privacy-protective option rejected on
   security grounds, which the skill had not considered.
+- Gap the grilling missed, caught by me on review: 22 questions
+  never asked how an assignment gets its participant — one
+  pre-assigned person, or an open pool participants claim from.
+  The brief's phrasing ("a participant is assigned a task")
+  smuggled the answer in, and the AI inherited it unexamined.
+  Decided: pre-assigned for the slice, marketplace named as the
+  likely real-product model in the design writeup's pushback
+  section.

@@ -28,3 +28,12 @@ Test: page logging a timestamp every 15s, served locally.
   aren't polish; the product depends on them. v2: signals that are
   cheap for honest presence (QR on site / timed photo), not
   costlier fraud detection.
+- The brief's first line — "a participant is assigned a task" —
+  presupposes the assignment model. A real mystery-shopping product
+  is more likely a marketplace: tasks posted openly, participants
+  claim them. Kept pre-assigned in the slice deliberately: claiming
+  adds an OPEN → CLAIMED state, claim-expiry sweeps, and
+  concurrent-claim races — a day of work that demonstrates no new
+  thinking. The Assignment/Visit split survives the change
+  unmodified: claiming alters how an assignment acquires its
+  participant, not what a visit is.
