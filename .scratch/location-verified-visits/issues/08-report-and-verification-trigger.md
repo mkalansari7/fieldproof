@@ -1,7 +1,7 @@
 # Report submission and verification
 
 Status: ready-for-agent
-Blocked by: 02, 03
+Blocked by: 01, 02, 03
 
 `POST /api/visits/{id}/report`: persist the report, transition
 `PENDING_REPORT -> COMPLETED`, run `verify` over the sealed trail, persist the

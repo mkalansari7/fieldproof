@@ -1,7 +1,6 @@
 # State machine and transition tests
 
 Status: ready-for-agent
-Blocked by: 01
 
 Both machines from `spec.md` §5 as explicit transition functions, plus the
 exhaustive `(state, event) -> state | rejected` test table.

@@ -1,7 +1,6 @@
 # Verification: the pure function
 
 Status: ready-for-agent
-Blocked by: 01
 
 **Build this first on Wednesday, while freshest.** It is the intellectual core and
 it has no dependencies — no DB, no clock, no I/O (ADR-0002).
