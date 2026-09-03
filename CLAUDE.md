@@ -22,7 +22,14 @@ Python 3.12, `src/` layout, package at `src/fieldproof/`. Angular lives in
 ```bash
 ~/.pyenv/versions/3.12.2/bin/python -m venv .venv
 .venv/bin/pip install -e ".[dev]"
+createdb fieldproof && createdb fieldproof_test
+.venv/bin/python -m fieldproof.seed          # builds the schema, then resets the demo data
 ```
+
+Postgres, on the local unix socket. `FIELDPROOF_DATABASE_URL` and
+`FIELDPROOF_TEST_DATABASE_URL` override. `tests/conftest.py` only connects for
+tests that ask for the `session` fixture, so the pure modules stay runnable with
+no database at all.
 
 Run all four before committing Python. Nothing lands red.
 

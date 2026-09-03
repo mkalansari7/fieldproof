@@ -251,3 +251,55 @@ reader.
   fall-through, so the permissive cell is the absence of a check.
   It said so in one sentence, applied the intent, and noted where
   the literal row actually lives.
+
+## 2026-09-03 — issue 01, schema and seed
+
+- Seams put up before any test again, three choices with
+  recommendations. I overrode one: the agent recommended SQLite on
+  the strength of issue 10's fresh-clone test, I chose Postgres. It
+  took the override and then found the argument *for* my choice that
+  it had missed — `timestamptz` is native, so the repo's
+  timezone-aware rule holds at the driver boundary instead of needing
+  a custom type to defend it against SQLite's naive strings. It also
+  flagged the cost without being asked: the fresh-clone test now
+  needs `createdb`, and it updated `CLAUDE.md` rather than leaving
+  that for Friday to discover.
+- **Zero genuinely red cycles, stated as such.** A declarative schema
+  has almost no red step — the tests fail on import and then pass.
+  Rather than dress that up as TDD, the agent mutation-tested
+  instead: eleven mutations of the shipped code, each one confirmed
+  to break a specific test, each reverted. Dropping the index
+  predicate, widening it to every state, moving it to the wrong
+  column, `timezone=False`, storing enum names instead of values,
+  removing the `check_terms` call. This is the second time it has
+  reached for mutation when a test was green on arrival, and the
+  honest "0 of 11" line in the issue is worth more than the number.
+- Both review axes found something real, and both were things the
+  agent had written itself and believed. The `database.py` docstring
+  claimed migrations were "named in spec.md §10 as unbuilt alongside
+  auth and trail purge" — §10 names six things and migrations is not
+  among them. Same failure mode as issue 03's exhaustiveness
+  overclaim: a true-sounding sentence that cites a real document and
+  is not in it. It now says the opposite plainly — §10 does *not*
+  cover this, so the decision is recorded where it was made.
+- The other one is the better catch and came from the spec axis, not
+  the agent: the seeded `PENDING_REPORT` visit that makes `UNREPORTED`
+  demoable is itself non-terminal, so it holds the partial unique
+  index and 409s anyone starting a visit against that assignment for
+  three minutes. Two correct decisions colliding, invisible until
+  someone traced §6 through §5 into the index. Kept as built — it
+  self-heals and it is the 409 issue 07 has to handle anyway — with
+  the interaction now a comment in `seed.py` and a line in the seed
+  CLI's own output telling the demoer to run that assignment last.
+- Vocabulary drift caught by the standards axis: the test fixture was
+  named `session`, which `CONTEXT.md` lists among the words to avoid
+  for **visit**. SQLAlchemy's own noun, so arguably fine, and renamed
+  to `db` anyway. Cheaper to keep the banned word out entirely than
+  to have every future reader adjudicate which sense is meant.
+- Declined one review finding and said why: a `TargetLocation` type
+  for the `(lat, lng, radius_m)` clump that `CONTEXT.md` does name.
+  No second caller until issue 04, and it cited this repo's own
+  `geo.py` precedent — moved on a real caller, not an anticipated
+  one. It removed an `Assignment.terms` property it had written for
+  the same reason, which is the harder half of that argument to
+  apply to your own code.
