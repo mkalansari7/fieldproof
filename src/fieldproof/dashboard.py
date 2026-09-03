@@ -8,7 +8,7 @@ choosing SSE over polling, and it is the one thing in this module a reader
 should check.
 
 **Subscribe first, snapshot second.** Every publisher in this codebase commits
-and then publishes (`sweeper.sweep_once`, `api.open_visit`), so a transition
+and then publishes (`sweeper.sweep_once` and every `api` handler), so a transition
 that commits after the snapshot's `SELECT` publishes after it too — and a queue
 registered before the `SELECT` is guaranteed to hold it. The other order has a
 gap: a transition landing between the query and the subscription is in neither
@@ -28,7 +28,9 @@ snapshot from a fresh subscription. Do not add them (issue 06).
 states, and timestamps — and no coordinates, no pings, no accuracy figures
 (ADR-0005). The target location is deliberately absent too: nothing on the
 dashboard renders it, and the one view that would (the map) is an internal audit
-surface, not this one.
+surface, not this one. A `COMPLETED` delta carries the same breakdown
+(`events.VisitTransitioned.verdict`), so the client never re-snapshots to
+render a report; the delta's `at` stands in for the snapshot's `computed_at`.
 """
 
 import asyncio

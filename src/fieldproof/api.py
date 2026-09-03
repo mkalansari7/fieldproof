@@ -15,6 +15,10 @@ believed on its own terms. Three rules, and this module holds all three:
   The stored `distance_m` is what makes verification an aggregate (ADR-0002),
   so a second implementation here would be a second answer to the question the
   verdict rests on.
+- **The trail `verify` judges is the trail the server sealed.** `submit_report`
+  bounds its query to `received_at <= ended_at` and passes `ended_at -
+  started_at` from its own two stamps. That is the caller invariant `verify`
+  documents and declines to enforce, upheld in the one place it says it must be.
 
 The two status codes are not interchangeable, and issue 07's client depends on
 which one it gets (see `Reason`).
@@ -27,7 +31,8 @@ only puts them on the wire.
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from http import HTTPStatus
 from typing import Annotated, Any
@@ -41,18 +46,30 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from fieldproof.config import BACKFILL_GRACE_S
+from fieldproof.config import BACKFILL_GRACE_S, SCORING_CONFIG
 from fieldproof.dashboard import DashboardSnapshot, encode, snapshot, stream
 from fieldproof.database import create_engine, session_factory
-from fieldproof.events import EventBus, transition_visit, visit_started
-from fieldproof.schema import ONE_NON_TERMINAL_VISIT_INDEX, Assignment, Ping, Visit
+from fieldproof.events import EventBus, transition_assignment, transition_visit, visit_started
+from fieldproof.schema import (
+    ONE_NON_TERMINAL_VISIT_INDEX,
+    ONE_REPORT_PER_VISIT_INDEX,
+    ONE_VERDICT_PER_VISIT_INDEX,
+    Assignment,
+    Ping,
+    Report,
+    VerdictRecord,
+    Visit,
+)
 from fieldproof.sweeper import start_sweeper, stop_sweeper
 from fieldproof.transitions import (
     IllegalTransitionError,
+    VisitCompleted,
     VisitEvent,
+    advance_visit,
     start_visit,
 )
-from fieldproof.verification import classify
+from fieldproof.verification import AssignmentTerms, classify, verify
+from fieldproof.verification import Ping as TrailPing
 
 
 def received_now() -> datetime:
@@ -132,6 +149,40 @@ class VisitStarted(BaseModel):
 
     visit_id: UUID
     started_at: datetime
+
+
+class VisitEnded(BaseModel):
+    """200. The trail is sealed; the write-up is due by `report_deadline_at`.
+
+    The deadline is the one fact the participant's page needs from this answer:
+    `UNREPORTED` is terminal and unrecoverable (spec.md §1), so the page tells
+    them when, rather than letting them find out from a 409.
+    """
+
+    visit_id: UUID
+    ended_at: datetime
+    report_deadline_at: datetime
+
+
+class ReportRequest(BaseModel):
+    """The participant's written account (spec.md §2). Non-empty, nothing else."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    body: str = Field(min_length=1)
+
+
+class ReportAccepted(BaseModel):
+    """200. The visit is `COMPLETED` and the assignment fulfilled.
+
+    No verdict, on purpose. The verdict is advice to the business (ADR-0004) and
+    the business's to read (ADR-0005); the participant's page ends at "done"
+    (issue 07). Telling them `suspicious` would invite an argument the system
+    has already declined to have — fulfilment does not depend on it.
+    """
+
+    visit_id: UUID
+    submitted_at: datetime
 
 
 async def _session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -293,7 +344,7 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         **The row lock is the point of this handler.** `advance_visit` reads a
         state and the INSERT writes against it, and between those two an `await`
         gives the loop to whoever else is holding a decision about this visit —
-        the sweeper abandoning it on silence (§7), or `POST /end` sealing it
+        the sweeper abandoning it on silence (§7), or `end_visit` sealing it
         (§5). Under `READ COMMITTED` an unlocked read is a snapshot, so that
         commit is invisible here and the ping lands on a visit that is already
         terminal: a trail that was sealed and then grew. `verify` states the
@@ -386,6 +437,172 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         await session.commit()
         bus.publish(events)
         return PingAccepted(received_at=received_at)
+
+    @app.post("/api/visits/{visit_id}/end", response_model=VisitEnded)
+    async def end_visit(visit_id: UUID, session: Session, bus: Bus) -> VisitEnded:
+        """Seal the trail: `ACTIVE -> PENDING_REPORT` (spec.md §5). 409 otherwise.
+
+        The seal is a stamp. `ended_at` is the server's clock at this request,
+        and from here `verify` reads nothing received after it (`submit_report`);
+        a ping that arrives later is a 409 from the machine, and one that is
+        *in flight* right now is what the lock is for. This handler is the
+        sealer `ingest_ping` describes waiting on: it takes the same `FOR
+        UPDATE OF visit`, so a ping that read `ACTIVE` before this transaction
+        began is either committed before the stamp — and so inside the window —
+        or re-reads `PENDING_REPORT` after it and is refused. Neither leaves a
+        ping past `ended_at`.
+
+        `report_deadline_at` is stamped here and only here, from the
+        assignment's `report_deadline_s` (spec.md §1): the unreported sweep
+        reads it and deliberately leaves a `PENDING_REPORT` visit with none
+        alone, so a sealer that forgot it would produce a visit that never
+        expires rather than one that expires wrongly (`sweeper`).
+        """
+        ended_at = received_now()
+        row = (
+            (
+                await session.execute(
+                    select(Visit, Assignment)
+                    .join(Assignment, Visit.assignment_id == Assignment.id)
+                    .where(Visit.id == visit_id)
+                    .with_for_update(of=Visit)
+                )
+            )
+            .tuples()
+            .one_or_none()
+        )
+        if row is None:
+            raise _error(HTTPStatus.NOT_FOUND, Reason.NOT_FOUND, f"no visit {visit_id}")
+        visit, assignment = row
+
+        events = transition_visit(visit, VisitEvent.END, at=ended_at)
+        visit.ended_at = ended_at
+        visit.report_deadline_at = ended_at + timedelta(seconds=assignment.report_deadline_s)
+        await session.commit()
+        bus.publish(events)
+        return VisitEnded(
+            visit_id=visit.id, ended_at=ended_at, report_deadline_at=visit.report_deadline_at
+        )
+
+    @app.post("/api/visits/{visit_id}/report", response_model=ReportAccepted)
+    async def submit_report(
+        visit_id: UUID, report: ReportRequest, session: Session, bus: Bus
+    ) -> ReportAccepted:
+        """Attach the write-up, judge the trail, fulfil the assignment (spec.md §5, §6).
+
+        One transaction, four writes: the report, the verdict with its full
+        breakdown and `scoring_config_version`, `PENDING_REPORT -> COMPLETED`,
+        `ASSIGNED -> FULFILLED`. All or none, so "`COMPLETED` with no verdict
+        row" — the state the dashboard cannot render (issue 08) — is not a
+        state this handler can leave behind. Fulfilment does not read the
+        verdict (ADR-0004): `VisitCompleted` carries it and `advance_assignment`
+        ignores it, by design.
+
+        **Both rows are locked, and both locks are answered for.** The visit,
+        against the unreported sweep stamping `UNREPORTED` over a report filed
+        in the last second of its window; the assignment, against the expiry
+        sweep expiring one that this report is fulfilling. Each sweep re-checks
+        its own `WHERE` after waiting on us and finds a row that no longer
+        matches (`sweeper`). `test_sweeper` stages both interleavings.
+
+        **The machine is consulted before the trail is read.** A report at a
+        visit that was never ended is a 409, and it is refused *before* anything
+        is scored — not after, and not by looking at `ended_at`, which is the
+        machine's job to guarantee and this handler's job to use. Once the move
+        is known to be legal, `ended_at` exists (the only way into
+        `PENDING_REPORT` stamps it, `end_visit`) and the two invariants `verify`
+        documents are paid here: the trail is bounded to `received_at <=
+        ended_at`, and `visit_duration_s` is the difference of the server's two
+        stamps. The verdict then rides the `COMPLETED` delta, which is the
+        decision issue 06 handed forward (`events.VisitTransitioned`).
+
+        A second report is refused by the machine — the visit is `COMPLETED` —
+        under the same row lock, so two arriving at once serialise into one
+        200 and one 409. The unique constraints below are for the row that
+        exists without its transition, and they answer with the same 409
+        rather than a 500 (`schema.ONE_REPORT_PER_VISIT_INDEX`).
+        """
+        submitted_at = received_now()
+        row = (
+            (
+                await session.execute(
+                    select(Visit, Assignment)
+                    .join(Assignment, Visit.assignment_id == Assignment.id)
+                    .where(Visit.id == visit_id)
+                    .with_for_update()
+                )
+            )
+            .tuples()
+            .one_or_none()
+        )
+        if row is None:
+            raise _error(HTTPStatus.NOT_FOUND, Reason.NOT_FOUND, f"no visit {visit_id}")
+        visit, assignment = row
+
+        # The pure check, ahead of the read: the move is applied for real by
+        # `transition_visit` below, once there is a verdict to apply it with.
+        advance_visit(visit.state, VisitEvent.REPORT_SUBMITTED)
+        if visit.ended_at is None:
+            # Unreachable through the machine, and a 500 is the honest answer
+            # if it is reached: the sealer is broken, not the participant.
+            raise RuntimeError(f"visit {visit.id} is {visit.state.value} with no ended_at")
+
+        trail = (
+            (
+                await session.execute(
+                    select(Ping)
+                    .where(Ping.visit_id == visit.id, Ping.received_at <= visit.ended_at)
+                    .order_by(Ping.received_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        verification = verify(
+            ping_trail=[
+                TrailPing(
+                    received_at=ping.received_at,
+                    distance_m=ping.distance_m,
+                    accuracy_m=ping.accuracy_m,
+                )
+                for ping in trail
+            ],
+            # Built here and not on `Assignment`: the terms are read at the one
+            # moment they are applied, and stamped onto the verdict beside the
+            # config version so the stored result traces to both (ADR-0002).
+            terms=AssignmentTerms(
+                radius_m=assignment.radius_m, min_duration_s=assignment.min_duration_s
+            ),
+            visit_duration_s=(visit.ended_at - visit.started_at).total_seconds(),
+            config=SCORING_CONFIG,
+        )
+
+        events = transition_visit(
+            visit, VisitEvent.REPORT_SUBMITTED, at=submitted_at, verdict=verification
+        )
+        events.append(
+            transition_assignment(
+                assignment, VisitCompleted(verdict=verification.verdict), at=submitted_at
+            )
+        )
+        session.add(Report(visit_id=visit.id, body=report.body, submitted_at=submitted_at))
+        # `VerdictRecord` is the persisted form of `Verification`, column for
+        # field (`schema`); the spread is that claim, checked at insert.
+        session.add(
+            VerdictRecord(visit_id=visit.id, computed_at=submitted_at, **asdict(verification))
+        )
+        try:
+            await session.commit()
+        except IntegrityError as exc:
+            await session.rollback()
+            if _violated_index(exc) not in {
+                ONE_REPORT_PER_VISIT_INDEX,
+                ONE_VERDICT_PER_VISIT_INDEX,
+            }:
+                raise
+            raise IllegalTransitionError("this visit already has a report") from exc
+        bus.publish(events)
+        return ReportAccepted(visit_id=visit.id, submitted_at=submitted_at)
 
     @app.get("/api/dashboard", response_model=DashboardSnapshot)
     async def dashboard(session: Session) -> Response:

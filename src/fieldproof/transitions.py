@@ -117,7 +117,13 @@ class VisitCompleted:
 
 @dataclass(frozen=True)
 class DeadlinePassed:
-    """The business's deadline elapsed with the assignment still open (spec.md §7)."""
+    """The business's deadline elapsed with the assignment still open (spec.md §5, §7).
+
+    `deadline_at` is a *start-by* time: this event is raised only for an
+    assignment with no visit in flight. That clause is the sweep's, not this
+    machine's — `advance_assignment` sees one row and cannot ask about others —
+    so `sweeper.expire_overdue_assignments` is where it is enforced and tested.
+    """
 
 
 type AssignmentEvent = VisitCompleted | DeadlinePassed

@@ -34,6 +34,7 @@ from fieldproof.transitions import (
     advance_assignment,
     advance_visit,
 )
+from fieldproof.verification import Verification
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,19 @@ class VisitTransitioned:
     §5's transition table, whose start row has no from-state at all, and
     `transitions.start_visit`, which takes `latest_visit=None` for the same
     reason. A visit's first appearance is not a move out of anything.
+
+    **`verdict` is present exactly when `to_state` is `COMPLETED`, and it is
+    not an origin field.** A verdict is a fact about the transition — the move
+    into `COMPLETED` *is* the trail being judged (spec.md §5) — so the delta
+    carries it the way the snapshot does, and the dashboard renders one shape
+    from either (issue 06's handoff, settled in issue 08). The symmetry this
+    module exists for survives because `COMPLETED` is only ever reached by a
+    report: a consumer that branches on the verdict's presence learns nothing
+    it did not already have from `to_state`. What it carries is the breakdown
+    and nothing else — no coordinates, no pings, no accuracy figures — which is
+    the line ADR-0005 draws and the snapshot's own test walks. The check in
+    `__post_init__` makes "a `COMPLETED` delta with no verdict" unconstructible
+    rather than merely unrendered.
     """
 
     visit_id: UUID
@@ -51,6 +65,14 @@ class VisitTransitioned:
     from_state: VisitState | None
     to_state: VisitState
     at: datetime
+    verdict: Verification | None = None
+
+    def __post_init__(self) -> None:
+        if (self.to_state is VisitState.COMPLETED) != (self.verdict is not None):
+            raise ValueError(
+                f"a transition to {self.to_state.value} "
+                f"{'needs' if self.verdict is None else 'carries no'} verdict"
+            )
 
 
 @dataclass(frozen=True)
@@ -88,8 +110,16 @@ def visit_started(visit: Visit) -> Event:
     )
 
 
-def transition_visit(visit: Visit, event: VisitEvent, *, at: datetime) -> list[Event]:
+def transition_visit(
+    visit: Visit, event: VisitEvent, *, at: datetime, verdict: Verification | None = None
+) -> list[Event]:
     """Advance `visit` in place and return what to publish. Empty if nothing changed.
+
+    `verdict` is the report path's alone: `REPORT_SUBMITTED` is the one event
+    whose move lands in `COMPLETED`, and `VisitTransitioned` refuses that move
+    without a verdict and any other move with one. The caller has therefore
+    scored the trail *before* calling this, which is the order `api.submit_report`
+    documents.
 
     Empty is what a ping gets. `ACTIVE --ping--> ACTIVE` is a real move in the
     machine and a real write to `last_ping_at`, but it is not a change of state,
@@ -120,6 +150,7 @@ def transition_visit(visit: Visit, event: VisitEvent, *, at: datetime) -> list[E
             from_state=before,
             to_state=visit.state,
             at=at,
+            verdict=verdict,
         )
     ]
 

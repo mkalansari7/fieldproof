@@ -194,7 +194,13 @@ LEGAL_ASSIGNMENT_MOVES: dict[tuple[AssignmentState, type], AssignmentState] = {
     (AssignmentState.ASSIGNED, VisitCompleted): AssignmentState.FULFILLED,
     (AssignmentState.ASSIGNED, DeadlinePassed): AssignmentState.EXPIRED,
 }
-"""Transcribed by hand from spec.md §5. EXPIRED and FULFILLED are terminal."""
+"""Transcribed by hand from spec.md §5. EXPIRED and FULFILLED are terminal.
+
+The table's `deadline passed` row carries a condition — no non-terminal visit —
+that this pure machine cannot evaluate. It is the expiry sweep's query, and
+`test_sweeper` is where it is pinned; here `DeadlinePassed` means the sweep
+already found the condition true.
+"""
 
 
 @pytest.mark.parametrize("current", list(AssignmentState))

@@ -18,15 +18,25 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fieldproof.api import Reason
-from fieldproof.config import BACKFILL_GRACE_S
-from fieldproof.schema import Assignment, Ping, Visit, new_assignment
+from fieldproof.config import BACKFILL_GRACE_S, SCORING_CONFIG
+from fieldproof.events import AssignmentTransitioned, EventBus, VisitTransitioned
+from fieldproof.schema import Assignment, Ping, Report, VerdictRecord, Visit, new_assignment
 from fieldproof.transitions import NON_TERMINAL_VISIT_STATES, AssignmentState, VisitState
-from fieldproof.verification import Classification, classify
+from fieldproof.verification import (
+    AssignmentTerms,
+    Classification,
+    Verdict,
+    Verification,
+    classify,
+    verify,
+)
+from fieldproof.verification import Ping as TrailPing
 
 TARGET_LAT, TARGET_LNG = 51.5080, -0.1281
 """Trafalgar Square, as the seed uses. The radius around it is the default 100m."""
@@ -63,7 +73,12 @@ async def make_assignment(
 
 
 async def make_visit(
-    db: AsyncSession, assignment: Assignment, state: VisitState = VisitState.ACTIVE
+    db: AsyncSession,
+    assignment: Assignment,
+    state: VisitState = VisitState.ACTIVE,
+    *,
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
 ) -> Visit:
     """A visit placed directly in `state`.
 
@@ -71,18 +86,61 @@ async def make_visit(
     licenses for fixtures: reaching `UNREPORTED` by walking the machine would be
     testing the machine, and these cases are about what ingest does when it
     finds a visit already there.
+
+    A sealed visit (`ended_at` given) gets the report deadline `end_visit` would
+    have stamped, a day out, so the report tests are not racing the sweeper's
+    definition of overdue.
     """
-    now = datetime.now(UTC)
+    started_at = datetime.now(UTC) if started_at is None else started_at
     visit = Visit(
         assignment_id=assignment.id,
         state=state,
-        started_at=now,
-        last_ping_at=now,
-        created_at=now,
+        started_at=started_at,
+        ended_at=ended_at,
+        last_ping_at=started_at if ended_at is None else ended_at,
+        report_deadline_at=None if ended_at is None else ended_at + timedelta(days=1),
+        created_at=started_at,
     )
     db.add(visit)
     await db.commit()
     return visit
+
+
+async def plant_ping(
+    db: AsyncSession, visit: Visit, *, at: datetime, distance_m: float, accuracy_m: float
+) -> Ping:
+    """One stored ping at a chosen `received_at`, as ingest would have written it.
+
+    `distance_m` is set directly rather than derived from coordinates: the
+    report tests are about what `verify` is handed, and geodesy is `geo`'s
+    (tested there). The coordinates are the target's and are not read by
+    anything under test.
+    """
+    ping = Ping(
+        visit_id=visit.id,
+        lat=TARGET_LAT,
+        lng=TARGET_LNG,
+        accuracy_m=accuracy_m,
+        reported_at=at,
+        received_at=at,
+        distance_m=distance_m,
+        classification=classify(distance_m=distance_m, accuracy_m=accuracy_m, radius_m=100.0),
+    )
+    db.add(ping)
+    await db.commit()
+    return ping
+
+
+async def stored_report(db: AsyncSession, visit: Visit) -> Report | None:
+    return (
+        await db.execute(select(Report).where(Report.visit_id == visit.id))
+    ).scalar_one_or_none()
+
+
+async def stored_verdict(db: AsyncSession, visit: Visit) -> VerdictRecord | None:
+    return (
+        await db.execute(select(VerdictRecord).where(VerdictRecord.visit_id == visit.id))
+    ).scalar_one_or_none()
 
 
 def ping_payload(
@@ -541,3 +599,465 @@ async def test_concurrent_starts_resolve_into_one_visit_and_clean_409s(
         .all()
     )
     assert len(visits) == 1
+
+
+# ---------------------------------------------------------------- ending a visit (issue 08)
+
+NOT_PENDING_REPORT = sorted(
+    set(VisitState) - {VisitState.PENDING_REPORT}, key=lambda state: state.value
+)
+
+
+async def test_ending_a_visit_seals_it_and_stamps_the_report_deadline(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """`ACTIVE -> PENDING_REPORT`, `ended_at` from the server's clock, the deadline from the assignment's terms."""
+    assignment = await make_assignment(db)
+    visit = await make_visit(db, assignment)
+
+    before = datetime.now(UTC)
+    response = await client.post(f"/api/visits/{visit.id}/end")
+    after = datetime.now(UTC)
+
+    assert response.status_code == 200
+    await db.refresh(visit)
+    assert visit.state is VisitState.PENDING_REPORT
+    assert visit.ended_at is not None
+    assert before <= visit.ended_at <= after
+    assert visit.report_deadline_at == visit.ended_at + timedelta(
+        seconds=assignment.report_deadline_s
+    )
+    body = response.json()
+    assert datetime.fromisoformat(body["ended_at"]) == visit.ended_at
+    assert datetime.fromisoformat(body["report_deadline_at"]) == visit.report_deadline_at
+
+
+@pytest.mark.parametrize("state", NOT_ACTIVE, ids=lambda state: state.value)
+async def test_ending_a_visit_that_is_not_active_is_409(
+    client: AsyncClient, db: AsyncSession, state: VisitState
+) -> None:
+    assignment = await make_assignment(db)
+    visit = await make_visit(db, assignment, state=state)
+
+    response = await client.post(f"/api/visits/{visit.id}/end")
+
+    assert response.status_code == 409
+    assert response.json()["reason"] == Reason.ILLEGAL_TRANSITION
+    await db.refresh(visit)
+    assert visit.state is state
+
+
+async def test_ending_an_unknown_visit_is_404(client: AsyncClient) -> None:
+    response = await client.post(f"/api/visits/{uuid4()}/end")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["reason"] == Reason.NOT_FOUND
+
+
+async def test_a_ping_after_the_end_is_409_and_leaves_no_row(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """The seal, from the trail's side: nothing received after `ended_at` is stored.
+
+    This is the invariant `verify` documents and the whole reason `end_visit`
+    takes the row lock. Here the two requests are sequential, which is the
+    common case; the racing case is `test_a_ping_racing_a_seal_loses_and_
+    leaves_no_row`.
+    """
+    assignment = await make_assignment(db)
+    visit = await make_visit(db, assignment)
+    assert (
+        await client.post(f"/api/visits/{visit.id}/pings", json=ping_payload())
+    ).status_code == 202
+
+    assert (await client.post(f"/api/visits/{visit.id}/end")).status_code == 200
+    late = await client.post(f"/api/visits/{visit.id}/pings", json=ping_payload())
+
+    assert late.status_code == 409
+    (only,) = await stored_pings(db, visit)
+    await db.refresh(visit)
+    assert visit.ended_at is not None
+    assert only.received_at <= visit.ended_at
+
+
+# ---------------------------------------------------------------- the report (issue 08)
+
+
+async def test_end_then_report_completes_the_visit_and_fulfils_the_assignment(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """The happy path, through every endpoint in order (spec.md §6).
+
+    Start, ping, end, report. The visit lands `COMPLETED` with a report row and
+    a verdict row stamped with the scoring config's version; the assignment
+    lands `FULFILLED`. The verdict here is `suspicious` — a visit a few
+    milliseconds long is shorter than `min_duration_s` — and the assignment is
+    fulfilled anyway, which is ADR-0004 observed through the wire rather than
+    asserted on the machine.
+    """
+    assignment = await make_assignment(db)
+    started = await client.post(f"/api/assignments/{assignment.id}/visits")
+    visit_id = UUID(started.json()["visit_id"])
+    assert (
+        await client.post(f"/api/visits/{visit_id}/pings", json=ping_payload())
+    ).status_code == 202
+    assert (await client.post(f"/api/visits/{visit_id}/end")).status_code == 200
+
+    before = datetime.now(UTC)
+    response = await client.post(f"/api/visits/{visit_id}/report", json={"body": "Shop was open."})
+    after = datetime.now(UTC)
+
+    assert response.status_code == 200
+    visit = await db.get(Visit, visit_id)
+    assert visit is not None
+    assert visit.state is VisitState.COMPLETED
+    await db.refresh(assignment)
+    assert assignment.state is AssignmentState.FULFILLED
+
+    report = await stored_report(db, visit)
+    assert report is not None
+    assert report.body == "Shop was open."
+    assert before <= report.submitted_at <= after
+
+    verdict = await stored_verdict(db, visit)
+    assert verdict is not None
+    assert verdict.verdict is Verdict.SUSPICIOUS
+    assert verdict.scoring_config_version == SCORING_CONFIG.version
+    assert verdict.radius_m == assignment.radius_m
+    assert verdict.min_duration_s == assignment.min_duration_s
+    assert verdict.total_pings == 1
+    assert verdict.computed_at == report.submitted_at
+    assert datetime.fromisoformat(response.json()["submitted_at"]) == report.submitted_at
+
+
+async def test_a_report_before_the_end_is_409_and_scores_nothing(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """A trail that is not sealed is not judged: no report row, no verdict, assignment untouched."""
+    assignment = await make_assignment(db)
+    visit = await make_visit(db, assignment)
+
+    response = await client.post(f"/api/visits/{visit.id}/report", json={"body": "Too early."})
+
+    assert response.status_code == 409
+    assert response.json()["reason"] == Reason.ILLEGAL_TRANSITION
+    assert await stored_report(db, visit) is None
+    assert await stored_verdict(db, visit) is None
+    await db.refresh(visit)
+    assert visit.state is VisitState.ACTIVE
+    await db.refresh(assignment)
+    assert assignment.state is AssignmentState.ASSIGNED
+
+
+async def test_a_report_after_unreported_is_409(client: AsyncClient, db: AsyncSession) -> None:
+    """`UNREPORTED` is terminal (spec.md §5): the window closed, and a late write-up does not reopen it."""
+    assignment = await make_assignment(db)
+    visit = await make_visit(
+        db, assignment, state=VisitState.UNREPORTED, ended_at=datetime.now(UTC) - timedelta(days=2)
+    )
+
+    response = await client.post(f"/api/visits/{visit.id}/report", json={"body": "Too late."})
+
+    assert response.status_code == 409
+    assert response.json()["reason"] == Reason.ILLEGAL_TRANSITION
+    assert await stored_report(db, visit) is None
+    assert await stored_verdict(db, visit) is None
+    await db.refresh(assignment)
+    assert assignment.state is AssignmentState.ASSIGNED
+
+
+@pytest.mark.parametrize("state", NOT_PENDING_REPORT, ids=lambda state: state.value)
+async def test_a_report_at_a_visit_that_is_not_pending_report_is_409(
+    client: AsyncClient, db: AsyncSession, state: VisitState
+) -> None:
+    """Every other state, derived: the handler runs the move and never names `PENDING_REPORT`."""
+    assignment = await make_assignment(db)
+    visit = await make_visit(db, assignment, state=state, ended_at=datetime.now(UTC))
+
+    response = await client.post(f"/api/visits/{visit.id}/report", json={"body": "x"})
+
+    assert response.status_code == 409
+    assert state.value in response.json()["message"]
+
+
+async def test_a_second_report_is_409_and_the_first_stands(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """Double submit — a retried request, a double-tap — refused by the machine: the visit is `COMPLETED`."""
+    assignment = await make_assignment(db)
+    visit = await make_visit(
+        db, assignment, state=VisitState.PENDING_REPORT, ended_at=datetime.now(UTC)
+    )
+
+    first = await client.post(f"/api/visits/{visit.id}/report", json={"body": "first"})
+    second = await client.post(f"/api/visits/{visit.id}/report", json={"body": "second"})
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["reason"] == Reason.ILLEGAL_TRANSITION
+    report = await stored_report(db, visit)
+    assert report is not None
+    assert report.body == "first"
+
+
+async def test_a_report_row_without_its_transition_is_409_not_500(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """The unique constraint, reached the only way it can be: a row that exists without its move.
+
+    The machine cannot see this — the visit is still `PENDING_REPORT` — so the
+    handler passes the check, scores the trail, and the INSERT is what refuses.
+    Recognising `ONE_REPORT_PER_VISIT_INDEX` by name turns the driver's error
+    into the machine's own 409 (`api._violated_index`); anything else would be
+    a stack trace for a rule the schema enforces on purpose. Nothing else from
+    the attempt survives the rollback: no verdict, no state change.
+    """
+    assignment = await make_assignment(db)
+    visit = await make_visit(
+        db, assignment, state=VisitState.PENDING_REPORT, ended_at=datetime.now(UTC)
+    )
+    db.add(Report(visit_id=visit.id, body="already here", submitted_at=datetime.now(UTC)))
+    await db.commit()
+
+    response = await client.post(f"/api/visits/{visit.id}/report", json={"body": "again"})
+
+    assert response.status_code == 409
+    assert response.json()["reason"] == Reason.ILLEGAL_TRANSITION
+    assert await stored_verdict(db, visit) is None
+    await db.refresh(visit)
+    assert visit.state is VisitState.PENDING_REPORT
+    await db.refresh(assignment)
+    assert assignment.state is AssignmentState.ASSIGNED
+
+
+async def test_a_report_racing_an_expiry_does_not_revive_the_assignment(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """The handler's half of the fulfilment-vs-expiry lock, through the endpoint.
+
+    `test_sweeper` proves the sweep waits on a handler that holds the
+    assignment; this proves the handler holds it. Another transaction has the
+    assignment row locked and is expiring it — the shape of the expiry sweep
+    from here — and the report arrives inside that window. With `FOR UPDATE`
+    on the assignment the handler waits, re-reads `EXPIRED`, and the machine
+    refuses `VisitCompleted` with a 409; nothing is written.
+
+    Scope the handler's lock to `of=Visit` and this fails with a 200: the
+    unlocked read of the assignment sees `ASSIGNED`, the in-memory move to
+    `FULFILLED` is legal, and the `UPDATE` then waits on the lock and writes
+    `FULFILLED` over the `EXPIRED` that committed in the meantime — a lost
+    update that revives a closed assignment. Found by mutation, and the reason
+    the report handler's lock is not scoped the way `ingest_ping`'s is.
+    """
+    assignment = await make_assignment(db)
+    visit = await make_visit(
+        db, assignment, state=VisitState.PENDING_REPORT, ended_at=datetime.now(UTC)
+    )
+
+    await db.execute(
+        update(Assignment)
+        .where(Assignment.id == assignment.id)
+        .values(state=AssignmentState.EXPIRED)
+    )
+
+    request = asyncio.create_task(
+        client.post(f"/api/visits/{visit.id}/report", json={"body": "Racing."})
+    )
+    await asyncio.sleep(0.2)
+    assert not request.done(), "the report should be waiting on the assignment's row lock"
+
+    await db.commit()
+    response = await request
+
+    assert response.status_code == 409
+    assert response.json()["reason"] == Reason.ILLEGAL_TRANSITION
+    await db.refresh(assignment)
+    assert assignment.state is AssignmentState.EXPIRED
+    await db.refresh(visit)
+    assert visit.state is VisitState.PENDING_REPORT
+    assert await stored_report(db, visit) is None
+    assert await stored_verdict(db, visit) is None
+
+
+async def test_an_empty_report_is_422(client: AsyncClient, db: AsyncSession) -> None:
+    assignment = await make_assignment(db)
+    visit = await make_visit(
+        db, assignment, state=VisitState.PENDING_REPORT, ended_at=datetime.now(UTC)
+    )
+
+    response = await client.post(f"/api/visits/{visit.id}/report", json={"body": ""})
+
+    assert response.status_code == 422
+    await db.refresh(visit)
+    assert visit.state is VisitState.PENDING_REPORT
+
+
+async def test_a_report_for_an_unknown_visit_is_404(client: AsyncClient) -> None:
+    response = await client.post(f"/api/visits/{uuid4()}/report", json={"body": "x"})
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["reason"] == Reason.NOT_FOUND
+
+
+# ---------------------------------------------------------------- the verdict row
+
+
+T0 = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+"""The hand-computed trail's start. Fixed, so every interval below is a subtraction."""
+
+TRAIL: list[tuple[float, float, float]] = [
+    # (seconds after T0, distance_m, accuracy_m)
+    (0, 0.0, 10.0),  # inside
+    (60, 0.0, 10.0),  # inside
+    (90, 90.0, 50.0),  # inconclusive: 40..140 straddles the 100m radius; skipped, not a gap
+    (120, 0.0, 10.0),  # inside
+    (180, 0.0, 10.0),  # inside
+    (240, 0.0, 10.0),  # inside
+    (300, 500.0, 10.0),  # outside — the 240→300 pair disagrees and contributes nothing
+    (360, 500.0, 10.0),  # outside
+    (420, 0.0, 10.0),  # inside — the 360→420 pair disagrees too
+    (480, 0.0, 10.0),  # inside
+    (510, 0.0, 10.0),  # inside, but received after ended_at at +500: not in the trail
+]
+"""A 500-second visit with ten pings inside its window and one past it.
+
+By hand: inside pairs 0→60, 60→120, 120→180, 180→240, 420→480 give 300s; the
+one outside pair 300→360 gives 60s; attributed 360s of 500, unattributed 140s,
+dwell 300/360. Nine conclusive of ten. If the stray at +510 were let in it
+would add a 480→510 inside pair — inside 330s, unattributed 110s, eleven pings —
+so every one of those numbers discriminates the bound `submit_report` applies.
+"""
+
+
+async def test_the_verdict_row_is_verify_over_the_sealed_trail(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """The stored breakdown equals the hand-computed one, and equals `verify`'s.
+
+    Two references on purpose, as the classification test does: the literals
+    catch a `verify` that changed under us, and the call catches a handler that
+    fed it something other than the sealed trail — the wrong duration, an
+    unbounded query, a ping mapped wrongly. `visit_duration_s` is the server's
+    two stamps and not the trail's span (480s), which is the other invariant.
+    """
+    assignment = await make_assignment(db)
+    visit = await make_visit(
+        db,
+        assignment,
+        state=VisitState.PENDING_REPORT,
+        started_at=T0,
+        ended_at=T0 + timedelta(seconds=500),
+    )
+    for offset_s, distance_m, accuracy_m in TRAIL:
+        await plant_ping(
+            db,
+            visit,
+            at=T0 + timedelta(seconds=offset_s),
+            distance_m=distance_m,
+            accuracy_m=accuracy_m,
+        )
+
+    response = await client.post(f"/api/visits/{visit.id}/report", json={"body": "Trail."})
+
+    assert response.status_code == 200
+    stored = await stored_verdict(db, visit)
+    assert stored is not None
+    assert stored.verdict is Verdict.VERIFIED
+    assert stored.inside_s == 300.0
+    assert stored.outside_s == 60.0
+    assert stored.attributed_total_s == 360.0
+    assert stored.unattributed_s == 140.0
+    assert stored.dwell_ratio == pytest.approx(300 / 360)
+    assert stored.conclusive_pings == 9
+    assert stored.total_pings == 10
+    assert stored.visit_duration_s == 500.0
+    assert stored.radius_m == 100.0
+    assert stored.min_duration_s == assignment.min_duration_s
+    assert stored.scoring_config_version == SCORING_CONFIG.version
+
+    expected = verify(
+        ping_trail=[
+            TrailPing(
+                received_at=T0 + timedelta(seconds=offset_s),
+                distance_m=distance_m,
+                accuracy_m=accuracy_m,
+            )
+            for offset_s, distance_m, accuracy_m in TRAIL
+            if offset_s <= 500
+        ],
+        terms=AssignmentTerms(
+            radius_m=assignment.radius_m, min_duration_s=assignment.min_duration_s
+        ),
+        visit_duration_s=500.0,
+        config=SCORING_CONFIG,
+    )
+    assert (
+        Verification(
+            **{field: getattr(stored, field) for field in Verification.__dataclass_fields__}
+        )
+        == expected
+    )
+
+
+async def test_a_report_publishes_the_completed_delta_with_its_verdict_then_the_fulfilment(
+    app: FastAPI, client: AsyncClient, db: AsyncSession
+) -> None:
+    """What the dashboard gets, in order: the visit's move carrying its breakdown, then the assignment's.
+
+    The verdict rides the delta (issue 06's handoff, decided in issue 08), so a
+    connected dashboard renders the completed visit without a second query. It
+    is the same `Verification` the row was written from — one computation, two
+    destinations — and it carries no location evidence, which
+    `test_dashboard` checks on the wire.
+    """
+    bus: EventBus = app.state.bus
+    assignment = await make_assignment(db)
+    visit = await make_visit(
+        db,
+        assignment,
+        state=VisitState.PENDING_REPORT,
+        started_at=T0,
+        ended_at=T0 + timedelta(seconds=500),
+    )
+
+    with bus.subscribe() as queue:
+        response = await client.post(f"/api/visits/{visit.id}/report", json={"body": "x"})
+
+    assert response.status_code == 200
+    stored = await stored_verdict(db, visit)
+    assert stored is not None
+    completed, fulfilled = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert completed == VisitTransitioned(
+        visit_id=visit.id,
+        assignment_id=assignment.id,
+        from_state=VisitState.PENDING_REPORT,
+        to_state=VisitState.COMPLETED,
+        at=stored.computed_at,
+        verdict=Verification(
+            **{field: getattr(stored, field) for field in Verification.__dataclass_fields__}
+        ),
+    )
+    assert fulfilled == AssignmentTransitioned(
+        assignment_id=assignment.id,
+        from_state=AssignmentState.ASSIGNED,
+        to_state=AssignmentState.FULFILLED,
+        at=stored.computed_at,
+    )
+
+
+async def test_ending_a_visit_publishes_the_seal(
+    app: FastAPI, client: AsyncClient, db: AsyncSession
+) -> None:
+    bus: EventBus = app.state.bus
+    assignment = await make_assignment(db)
+    visit = await make_visit(db, assignment)
+
+    with bus.subscribe() as queue:
+        response = await client.post(f"/api/visits/{visit.id}/end")
+
+    assert response.status_code == 200
+    (sealed,) = [queue.get_nowait() for _ in range(queue.qsize())]
+    assert isinstance(sealed, VisitTransitioned)
+    assert sealed.from_state is VisitState.ACTIVE
+    assert sealed.to_state is VisitState.PENDING_REPORT
+    assert sealed.verdict is None

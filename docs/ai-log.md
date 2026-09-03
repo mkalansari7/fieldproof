@@ -415,3 +415,33 @@ reader.
   coords; real GPS was proven separately on 2026-09-01.
 - CORS middleware added (was always needed for 07); GitHub SSH
   moved to 443 — home network blocks port 22.
+
+## 2026-09-04 — build, issue 08, report and verification trigger
+
+- Both endpoints landed with the lock discipline issue 05 pre-paid:
+  `/end` takes the visit lock `ingest_ping` was written to wait on;
+  `/report` locks visit and assignment and does its four writes in
+  one transaction, commit then publish. The two pre-paid
+  interleaving tests passed unchanged on first run.
+- verify()'s two caller invariants are upheld at the trigger and
+  pinned by one test with a hand-computed 500-second trail (ten
+  pings inside the window, one past it): the stray ping moves
+  three numbers, so an unbounded query cannot pass.
+- Decision A implemented as a NOT EXISTS in the expiry sweep's
+  query, not a branch in the pure machine. The pinning test
+  flipped, spec §5/§7 now say "start by", issue 05's paragraph
+  rewritten. One residual window recorded on the sweep, not fixed:
+  open_visit does not lock the assignment.
+- The 06 handoff decided: the verdict rides the COMPLETED delta.
+  The argument (ADR-0005: the breakdown is exactly what the
+  business may see; one-renderer: COMPLETED is reachable only by a
+  report, so the field is not an origin in disguise) is in issue
+  06's comments, the shape is in issue 09's notes, and the type
+  enforces it — a COMPLETED event without a verdict is
+  unconstructible.
+- Mutation pass, four mutations on the trigger wiring, one
+  survivor: scoping the report handler's lock to the visit alone
+  passed everything, because the pre-paid expiry-race test holds
+  the assignment lock by hand and so proves the sweep's side only.
+  Closed by staging the race through the endpoint; without the
+  lock it is a lost update, FULFILLED written over EXPIRED.

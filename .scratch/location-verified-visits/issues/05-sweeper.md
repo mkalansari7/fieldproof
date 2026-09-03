@@ -95,16 +95,21 @@ mode of sweeping it is taking away a participant's chance to write up work they
 already did. `PENDING_REPORT` is visible and recoverable; `UNREPORTED` is
 terminal and is not.
 
-**Noted, not fixed: an assignment expires beneath a live visit.** spec.md §5 and
-§7 make the rule unconditional, so a participant who starts a visit at 16:59
-against a 17:00 deadline has the assignment expire under them. Their visit runs
-to `PENDING_REPORT` normally, and then `advance_assignment` has no move out of
-`EXPIRED`, so the report they file cannot fulfil it. Carving out "unless a visit
-is in flight" changes what `EXPIRED` means, which is a spec decision and not an
-implementation one. Implemented as written and pinned by
-`test_an_assignment_expires_beneath_a_live_visit`, which will fail loudly if the
-decision is ever made. **Issue 08 is where it bites and where it should be
-settled.**
+**Found here, settled in issue 08: an assignment expired beneath a live visit.**
+spec.md §5 and §7 as first written made the rule unconditional, so a
+participant who started a visit at 16:59 against a 17:00 deadline had the
+assignment expire under them; their visit ran to `PENDING_REPORT` normally, and
+then `advance_assignment` had no move out of `EXPIRED`, so the report they
+filed could not fulfil it. Carving out "unless a visit is in flight" changed
+what `EXPIRED` means, which was a spec decision and not an implementation one,
+so it was implemented as written, pinned by
+`test_an_assignment_expires_beneath_a_live_visit`, and routed forward. The
+decision (2026-09-03, issue 08): the expiry sweep skips assignments with a
+non-terminal visit, and `deadline_at` means *start by*. Landed with issue 08 on
+2026-09-04 — the guard is a `NOT EXISTS` in
+`sweeper.expire_overdue_assignments`, the pinning test became
+`test_an_assignment_stays_assigned_beneath_a_live_visit`, and spec.md §5 and §7
+now say so.
 
 **The loop is arranged around one failure mode: a dead sweeper looks exactly
 like a quiet one.** Nothing observes these transitions failing to happen — no

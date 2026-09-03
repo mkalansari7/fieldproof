@@ -29,13 +29,19 @@ from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fieldproof.config import ABANDON_AFTER_S, SWEEP_TICK_S
 from fieldproof.events import Event, EventBus, transition_assignment, transition_visit
 from fieldproof.schema import Assignment, Visit
-from fieldproof.transitions import AssignmentState, DeadlinePassed, VisitEvent, VisitState
+from fieldproof.transitions import (
+    NON_TERMINAL_VISIT_STATES,
+    AssignmentState,
+    DeadlinePassed,
+    VisitEvent,
+    VisitState,
+)
 
 log = logging.getLogger(__name__)
 
@@ -120,24 +126,37 @@ async def expire_unreported_visits(session: AsyncSession, *, now: datetime) -> l
 
 
 async def expire_overdue_assignments(session: AsyncSession, *, now: datetime) -> list[Event]:
-    """`ASSIGNED` assignments past `deadline_at` → `EXPIRED` (spec.md §5, §7).
+    """`ASSIGNED` past `deadline_at`, with no visit in flight → `EXPIRED` (spec.md §5, §7).
 
-    Locked for the same reason the visit sweeps are, against a writer that does
-    not exist yet: issue 08 moves an assignment to `FULFILLED` when a report
-    lands, and that read-then-write races this one. `ingest_ping` deliberately
-    scopes its lock `of=Visit` to stay off these rows, so nothing in the request
-    path contends with this scan.
+    Locked for the same reason the visit sweeps are: `api.submit_report` moves
+    an assignment to `FULFILLED` when a report lands, and that read-then-write
+    races this one. `ingest_ping` deliberately scopes its lock `of=Visit` to
+    stay off these rows, so nothing else in the request path contends with this
+    scan.
 
-    **A live visit does not stay this sweep, and that has a consequence worth
-    stating.** spec.md §5 and §7 make the rule unconditional — `ASSIGNED` plus a
-    passed deadline is `EXPIRED` — so a participant who starts a visit at 16:59
-    against a 17:00 deadline has the assignment expire beneath them; their visit
-    runs to `PENDING_REPORT` normally, and then `advance_assignment` has no
-    `EXPIRED --report--> FULFILLED` move, so the report they file is refused.
-    Carving out "unless a visit is in flight" would change what `EXPIRED` means
-    and is a spec decision, not an implementation one. Issue 08 is where it bites
-    and where it should be settled; it is recorded in issue 05's comments.
+    **A live visit stays this sweep.** `deadline_at` is a *start-by* time: a
+    participant who opened a visit at 16:59 against a 17:00 deadline started in
+    time, and keeps the ability to fulfil for as long as that visit is
+    non-terminal. The assignment expires on the first pass after the visit
+    reaches a terminal state without completing — `ABANDONED` by the sweep
+    before this one, or `UNREPORTED` by the one in between — and never if it
+    completes, because completion fulfils it (ADR-0004). Without this clause
+    the visit ran to `PENDING_REPORT` normally and the report was then refused,
+    since `advance_assignment` has no move out of `EXPIRED`; issue 05 found it,
+    issue 08 decided it, and `test_an_assignment_stays_assigned_beneath_a_live_
+    visit` pins it.
+
+    The guard is a `NOT EXISTS` in the query rather than a branch in
+    `advance_assignment`, because the machine is pure and cannot see other rows
+    (`transitions`). It evaluates against this statement's snapshot, so the one
+    window it does not close is a visit whose `open_visit` commits after this
+    `SELECT` began: the width of one request, in the last instant before a
+    pass, and recorded rather than fixed.
     """
+    live_visit = select(Visit.id).where(
+        Visit.assignment_id == Assignment.id,
+        Visit.state.in_(NON_TERMINAL_VISIT_STATES),
+    )
     assignments = (
         (
             await session.execute(
@@ -145,6 +164,7 @@ async def expire_overdue_assignments(session: AsyncSession, *, now: datetime) ->
                 .where(
                     Assignment.state == AssignmentState.ASSIGNED,
                     Assignment.deadline_at < now,
+                    ~exists(live_visit),
                 )
                 .with_for_update()
             )

@@ -14,6 +14,7 @@ re-implemented the `event:`/`data:` grammar would be testing its own parser.
 """
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -27,13 +28,14 @@ from fieldproof.dashboard import (
     DashboardSnapshot,
     DashboardVerdict,
     Frame,
+    encode,
     snapshot,
     stream,
 )
 from fieldproof.events import EventBus, VisitTransitioned
 from fieldproof.schema import Assignment, Ping, VerdictRecord, Visit, new_assignment
 from fieldproof.transitions import AssignmentState, VisitState
-from fieldproof.verification import Classification, Verdict
+from fieldproof.verification import Classification, Verdict, Verification
 
 NOW = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
 
@@ -346,3 +348,45 @@ async def test_the_snapshot_carries_no_location_evidence(db: AsyncSession) -> No
 
     assert keys(dumped) & LOCATION_EVIDENCE == set()
     assert "pings" not in keys(dumped)
+
+
+def test_a_completed_delta_carries_the_breakdown_and_no_location_evidence() -> None:
+    """ADR-0005 on the wire's other half: the delta, now that it carries a verdict (issue 08).
+
+    The same walk the snapshot gets. The breakdown is what the business may see
+    and is all the delta adds; `radius_m` is a term the business set and rides
+    along for the same reason it does in the snapshot.
+    """
+    verification = Verification(
+        verdict=Verdict.VERIFIED,
+        inside_s=300.0,
+        outside_s=60.0,
+        unattributed_s=140.0,
+        attributed_total_s=360.0,
+        dwell_ratio=300 / 360,
+        conclusive_pings=9,
+        total_pings=10,
+        visit_duration_s=500.0,
+        radius_m=100.0,
+        min_duration_s=300,
+        scoring_config_version="v1",
+    )
+    frame = encode(
+        VisitTransitioned(
+            visit_id=uuid4(),
+            assignment_id=uuid4(),
+            from_state=VisitState.PENDING_REPORT,
+            to_state=VisitState.COMPLETED,
+            at=NOW,
+            verdict=verification,
+        )
+    )
+
+    name, data = frame.decode().rstrip("\n").split("\n")
+    assert name == "event: visit"
+    payload = json.loads(data.removeprefix("data: "))
+    assert payload["to_state"] == "COMPLETED"
+    assert payload["verdict"]["verdict"] == "verified"
+    assert payload["verdict"]["dwell_ratio"] == pytest.approx(300 / 360)
+    assert set(payload["verdict"]) == set(Verification.__dataclass_fields__)
+    assert keys(payload) & LOCATION_EVIDENCE == set()

@@ -35,6 +35,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
     text,
 )
@@ -313,13 +314,27 @@ class Ping(Base):
     )
 
 
+ONE_REPORT_PER_VISIT_INDEX = "ux_report_one_per_visit"
+ONE_VERDICT_PER_VISIT_INDEX = "ux_verdict_one_per_visit"
+"""The two unique constraints behind "one report, one verdict, per visit".
+
+Named for the same reason `ONE_NON_TERMINAL_VISIT_INDEX` is: `api.submit_report`
+reads them back out of an `IntegrityError` to answer a second report with the
+machine's own 409 rather than a 500. The state machine refuses a report at a
+`COMPLETED` visit first and under the row lock, so these are reached only by a
+row that exists without its transition — which is precisely the row worth
+refusing by name.
+"""
+
+
 class Report(Base):
     """The participant's written account, submitted after the visit is sealed."""
 
     __tablename__ = "report"
+    __table_args__ = (UniqueConstraint("visit_id", name=ONE_REPORT_PER_VISIT_INDEX),)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    visit_id: Mapped[UUID] = mapped_column(ForeignKey("visit.id"), unique=True)
+    visit_id: Mapped[UUID] = mapped_column(ForeignKey("visit.id"))
     body: Mapped[str] = mapped_column(Text)
     submitted_at: Mapped[datetime] = mapped_column(_Timestamp)
 
@@ -338,9 +353,10 @@ class VerdictRecord(Base):
     """
 
     __tablename__ = "verdict"
+    __table_args__ = (UniqueConstraint("visit_id", name=ONE_VERDICT_PER_VISIT_INDEX),)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
-    visit_id: Mapped[UUID] = mapped_column(ForeignKey("visit.id"), unique=True)
+    visit_id: Mapped[UUID] = mapped_column(ForeignKey("visit.id"))
 
     verdict: Mapped[Verdict] = mapped_column(_enum(Verdict, "verdict_outcome"))
 

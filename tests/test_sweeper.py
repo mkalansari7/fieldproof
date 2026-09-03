@@ -48,14 +48,12 @@ from fieldproof.sweeper import (
     sweep_once,
 )
 from fieldproof.transitions import (
+    NON_TERMINAL_VISIT_STATES,
     AssignmentState,
-    IllegalTransitionError,
-    VisitCompleted,
     VisitEvent,
     VisitState,
-    advance_assignment,
 )
-from fieldproof.verification import Verdict
+from fieldproof.verification import Verdict, Verification
 from tests.conftest import TEST_DATABASE_URL
 
 NOW = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
@@ -70,6 +68,8 @@ NOT_PENDING_REPORT = sorted(
 NOT_ASSIGNED = sorted(
     set(AssignmentState) - {AssignmentState.ASSIGNED}, key=lambda state: state.value
 )
+NON_TERMINAL = sorted(NON_TERMINAL_VISIT_STATES, key=lambda state: state.value)
+TERMINAL = sorted(set(VisitState) - NON_TERMINAL_VISIT_STATES, key=lambda state: state.value)
 
 
 async def make_assignment(
@@ -438,34 +438,74 @@ async def test_only_assigned_assignments_expire(
     assert events == []
 
 
-async def test_an_assignment_expires_beneath_a_live_visit(
-    db: AsyncSession, factory: async_sessionmaker[AsyncSession]
+@pytest.mark.parametrize("state", NON_TERMINAL, ids=lambda state: state.value)
+async def test_an_assignment_stays_assigned_beneath_a_live_visit(
+    db: AsyncSession, factory: async_sessionmaker[AsyncSession], state: VisitState
 ) -> None:
-    """The rule is unconditional, and this is the consequence, pinned deliberately.
+    """`deadline_at` means *start by* (spec.md §5, §7; decided in issue 08).
 
-    spec.md §5 and §7 say `ASSIGNED` plus a passed deadline is `EXPIRED`, full
-    stop, so a participant standing in the shop at 16:59 against a 17:00
-    deadline has the assignment expire beneath them. Their visit is untouched
-    and runs to `PENDING_REPORT` normally — and then `advance_assignment` has no
-    move out of `EXPIRED`, so the report they file cannot fulfil it.
-
-    Asserted rather than fixed because carving out "unless a visit is in flight"
-    changes what `EXPIRED` means, which is a spec decision. Issue 08 is where it
-    bites; this test is what will fail loudly if that decision is ever made, and
-    it is recorded in issue 05's comments.
+    A participant standing in the shop at 16:59 against a 17:00 deadline
+    started in time. Issue 05 found that the rule as first written expired the
+    assignment beneath them, and `advance_assignment` has no move out of
+    `EXPIRED`, so the report they filed could not fulfil it. The sweep now
+    skips an assignment with a non-terminal visit, for both non-terminal
+    states: a visit already sealed and awaiting its write-up is as live, for
+    this purpose, as one still pinging.
     """
     assignment = await make_assignment(db, overdue_by_s=1.0)
-    visit = await make_visit(db, assignment)
+    visit = await make_visit(db, assignment, state=state)
 
     async with factory() as session:
-        await expire_overdue_assignments(session, now=NOW)
+        events = await expire_overdue_assignments(session, now=NOW)
+        await session.commit()
+
+    assert (await reload_assignment(db, assignment)).state is AssignmentState.ASSIGNED
+    assert (await reload_visit(db, visit)).state is state
+    assert events == []
+
+
+@pytest.mark.parametrize("state", TERMINAL, ids=lambda state: state.value)
+async def test_an_assignment_expires_once_its_visit_has_ended_without_fulfilling(
+    db: AsyncSession, factory: async_sessionmaker[AsyncSession], state: VisitState
+) -> None:
+    """The other half of "start by": a terminal visit is no longer a reason to wait.
+
+    `ABANDONED` and `UNREPORTED` are the real cases — the attempt died, the
+    deadline is past, and a new attempt may not start (`start_visit` refuses
+    `EXPIRED`). `COMPLETED` under a still-`ASSIGNED` assignment is a row some
+    transaction got wrong, since completion fulfils in the same stroke; the
+    sweep treats it like any other terminal visit rather than guessing.
+    """
+    assignment = await make_assignment(db, overdue_by_s=1.0)
+    await make_visit(db, assignment, state=state)
+
+    async with factory() as session:
+        events = await expire_overdue_assignments(session, now=NOW)
         await session.commit()
 
     assert (await reload_assignment(db, assignment)).state is AssignmentState.EXPIRED
-    assert (await reload_visit(db, visit)).state is VisitState.ACTIVE
-    with pytest.raises(IllegalTransitionError):
-        # What issue 08 will hit when this visit's report arrives.
-        advance_assignment(AssignmentState.EXPIRED, VisitCompleted(verdict=Verdict.VERIFIED))
+    assert [event.to_state for event in events] == [AssignmentState.EXPIRED]
+
+
+async def test_a_visit_abandoned_in_a_pass_lets_its_assignment_expire_in_the_same_pass(
+    db: AsyncSession, factory: async_sessionmaker[AsyncSession], bus: EventBus
+) -> None:
+    """spec.md §7's order, with a consequence: abandon runs before expire.
+
+    Each sweep is its own transaction and commits before the next begins, so
+    the expiry sweep's `NOT EXISTS` sees the visit the abandon sweep just
+    closed. An overdue assignment whose last attempt went silent is `EXPIRED`
+    one pass later, not two.
+    """
+    assignment = await make_assignment(db, overdue_by_s=1.0)
+    visit = await make_visit(db, assignment, silent_for_s=ABANDON_AFTER_S + 1)
+
+    with bus.subscribe() as queue:
+        await sweep_once(factory, bus, now=NOW)
+
+    assert (await reload_visit(db, visit)).state is VisitState.ABANDONED
+    assert (await reload_assignment(db, assignment)).state is AssignmentState.EXPIRED
+    assert [type(event) for event in drain(queue)] == [VisitTransitioned, AssignmentTransitioned]
 
 
 # ---------------------------------------------------------------- one pass
@@ -776,6 +816,61 @@ async def test_a_ping_publishes_nothing(
 
     assert response.status_code == 202
     assert queue.empty()
+
+
+A_VERIFICATION = Verification(
+    verdict=Verdict.VERIFIED,
+    inside_s=300.0,
+    outside_s=60.0,
+    unattributed_s=140.0,
+    attributed_total_s=360.0,
+    dwell_ratio=300 / 360,
+    conclusive_pings=9,
+    total_pings=10,
+    visit_duration_s=500.0,
+    radius_m=100.0,
+    min_duration_s=300,
+    scoring_config_version="v1",
+)
+
+
+def test_a_completed_delta_carries_its_verdict_and_no_other_delta_does() -> None:
+    """The verdict is a fact about the transition, and the type says so (issue 08).
+
+    `COMPLETED` without a breakdown is the state issue 08 calls one the
+    dashboard cannot render; here it cannot be built. The converse holds too,
+    so the verdict is not a field a sweep-produced event could ever carry —
+    which is what keeps it from being an origin field in disguise (`events`).
+    """
+    visit_id, assignment_id = uuid4(), uuid4()
+
+    completed = VisitTransitioned(
+        visit_id=visit_id,
+        assignment_id=assignment_id,
+        from_state=VisitState.PENDING_REPORT,
+        to_state=VisitState.COMPLETED,
+        at=NOW,
+        verdict=A_VERIFICATION,
+    )
+    assert completed.verdict is A_VERIFICATION
+
+    with pytest.raises(ValueError, match="needs"):
+        VisitTransitioned(
+            visit_id=visit_id,
+            assignment_id=assignment_id,
+            from_state=VisitState.PENDING_REPORT,
+            to_state=VisitState.COMPLETED,
+            at=NOW,
+        )
+    with pytest.raises(ValueError, match="carries no"):
+        VisitTransitioned(
+            visit_id=visit_id,
+            assignment_id=assignment_id,
+            from_state=VisitState.ACTIVE,
+            to_state=VisitState.ABANDONED,
+            at=NOW,
+            verdict=A_VERIFICATION,
+        )
 
 
 async def test_every_subscriber_gets_every_event(bus: EventBus) -> None:

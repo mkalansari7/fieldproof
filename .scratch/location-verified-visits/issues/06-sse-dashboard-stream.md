@@ -93,6 +93,27 @@ neither taken here: carry the verdict on the event when issue 08 publishes it
 symmetry survives), or have the client re-snapshot on `COMPLETED` (zero new
 code, one extra GET per report). Noted in issue 08's file.
 
+**2026-09-04 — the handoff is settled by issue 08: the verdict rides the
+delta.** `VisitTransitioned` gained `verdict: Verification | None`, present
+exactly when `to_state` is `COMPLETED` and refused otherwise by the record's
+own `__post_init__`. Against ADR-0005: the breakdown is precisely the set of
+facts the business may see — it is the same `Verification` the verdict row is
+written from, with no coordinate, ping, accuracy or `last_ping_at` on it, and
+`test_a_completed_delta_carries_the_breakdown_and_no_location_evidence` walks
+the encoded delta's keys the way the snapshot test walks the snapshot's. Against
+the one-renderer property: a verdict is a fact about the transition, not about
+its origin, and `COMPLETED` is a state only a report can reach, so a consumer
+that branches on the verdict's presence learns nothing `to_state` had not
+already told it — the sweep/request symmetry survives as a property of the
+type. The re-snapshot alternative was rejected because it makes the client
+treat one `to_state` differently from the other five (a GET on `COMPLETED`,
+apply-in-place otherwise), which is a second code path for the state the
+dashboard most needs to get right, and because the extra round trip buys
+nothing the delta cannot carry. The shape differs from the snapshot's
+`DashboardVerdict` in one field: the delta has no `computed_at`, because the
+event's `at` is that instant. Issue 09's client should render a verdict from
+either with one function.
+
 **Not tested, as fenced.** The SSE grammar is not parsed in any test; the wire
 was proved by a served instance on the test database — correct headers, named
 `snapshot` and `visit` events, a visit started over HTTP arriving as a delta

@@ -197,10 +197,18 @@ The exhaustive table. Anything absent is rejected — tests assert this (issue 0
 | From | Event | To |
 | --- | --- | --- |
 | ASSIGNED | visit completed | FULFILLED |
-| ASSIGNED | deadline passed (sweep) | EXPIRED |
+| ASSIGNED | deadline passed, no non-terminal visit (sweep) | EXPIRED |
 
 Fulfilment is independent of verdict (ADR-0004): a `suspicious` completed visit
 still fulfils.
+
+`deadline_at` is a **start-by** time. A visit opened before it keeps the
+assignment `ASSIGNED` for as long as that visit is non-terminal (`ACTIVE` or
+`PENDING_REPORT`), so a participant who started in time can still fulfil after
+the deadline passes. The assignment expires on the first sweep after the visit
+ends without completing (`ABANDONED`, `UNREPORTED`); if it completes, the report
+fulfils it. Decided in issue 08 after issue 05 found the unconditional rule
+expired assignments beneath live visits.
 
 **Visit**
 
@@ -232,8 +240,11 @@ GET  /api/dashboard/stream                 SSE: snapshot, then deltas
 
 One `asyncio` task, `SWEEP_TICK_S`. Each pass: `ACTIVE` with stale `last_ping_at`
 → `ABANDONED`; `PENDING_REPORT` past deadline → `UNREPORTED`; `ASSIGNED` past
-deadline → `EXPIRED`. Every transition publishes to the same in-process bus the
-API handlers use, so the dashboard cannot tell which path produced an event.
+deadline **with no non-terminal visit** → `EXPIRED` (§5: the deadline is a
+start-by time, and a visit in flight stays the sweep). The order matters: a
+visit abandoned in a pass lets its assignment expire in the same pass. Every
+transition publishes to the same in-process bus the API handlers use, so the
+dashboard cannot tell which path produced an event.
 
 ## 8. Client behaviour
 
