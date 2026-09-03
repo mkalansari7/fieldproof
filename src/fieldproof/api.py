@@ -37,11 +37,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from fieldproof.config import BACKFILL_GRACE_S
 from fieldproof.database import create_engine, session_factory
+from fieldproof.events import EventBus, transition_visit, visit_started
 from fieldproof.schema import ONE_NON_TERMINAL_VISIT_INDEX, Assignment, Ping, Visit
+from fieldproof.sweeper import start_sweeper, stop_sweeper
 from fieldproof.transitions import (
     IllegalTransitionError,
     VisitEvent,
-    advance_visit,
     start_visit,
 )
 from fieldproof.verification import classify
@@ -141,6 +142,15 @@ async def _session(request: Request) -> AsyncIterator[AsyncSession]:
 Session = Annotated[AsyncSession, Depends(_session)]
 
 
+def _bus(request: Request) -> EventBus:
+    """The one bus for this app. The sweeper publishes to this same object."""
+    bus: EventBus = request.app.state.bus
+    return bus
+
+
+Bus = Annotated[EventBus, Depends(_bus)]
+
+
 async def _illegal_transition(_: Request, exc: Exception) -> JSONResponse:
     """Every `IllegalTransitionError` becomes a 409, in one place.
 
@@ -159,26 +169,35 @@ async def _illegal_transition(_: Request, exc: Exception) -> JSONResponse:
 def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
     """The application.
 
-    An `engine` passed in is the caller's to dispose, and the app is fully wired
-    the moment this returns — which is what lets the tests drive it through
+    An `engine` passed in is the caller's to dispose, and the routes are wired
+    the moment this returns — which is what lets the tests drive them through
     `ASGITransport` with no lifespan manager. With no engine, the app makes and
     disposes its own inside the lifespan, because an engine binds to the loop
     that will use it and there is no such loop at import time.
+
+    The **sweeper** starts in the lifespan either way, and only there: it needs a
+    running loop, and a test that got one for free with every `create_app` would
+    have three sweeps running against its fixtures. `tests/test_sweeper.py`
+    drives the lifespan explicitly to check that a served app does start it —
+    never starting the sweeper is the loudest version of spec.md §7's failure
+    mode and the one no request would ever reveal.
     """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        if engine is not None:
-            yield
-            return
-        owned = create_engine()
-        app.state.session_factory = session_factory(owned)
+        owned = create_engine() if engine is None else None
+        if owned is not None:
+            app.state.session_factory = session_factory(owned)
+        app.state.sweeper = start_sweeper(app.state.session_factory, app.state.bus)
         try:
             yield
         finally:
-            await owned.dispose()
+            await stop_sweeper(app.state.sweeper)
+            if owned is not None:
+                await owned.dispose()
 
     app = FastAPI(title="fieldproof", lifespan=lifespan)
+    app.state.bus = EventBus()
     if engine is not None:
         app.state.session_factory = session_factory(engine)
     app.add_exception_handler(IllegalTransitionError, _illegal_transition)
@@ -188,8 +207,12 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         status_code=HTTPStatus.CREATED,
         response_model=VisitStarted,
     )
-    async def open_visit(assignment_id: UUID, session: Session) -> VisitStarted:
+    async def open_visit(assignment_id: UUID, session: Session, bus: Bus) -> VisitStarted:
         """Start a visit against an assignment (spec.md §5, §6). 409 if it may not.
+
+        Publishes on the same bus as the sweeper, after the commit — a new visit
+        is the one transition the dashboard learns about from a request rather
+        than a sweep, and a consumer receiving it has no way to tell (`events`).
 
         Two referees, one answer. `start_visit` reads the assignment's state and
         the latest visit's and refuses what it can see; the partial unique index
@@ -237,6 +260,7 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
             raise IllegalTransitionError(
                 "this assignment already has a non-terminal visit"
             ) from exc
+        bus.publish([visit_started(visit)])
         return VisitStarted(visit_id=visit.id, started_at=started_at)
 
     @app.post(
@@ -244,7 +268,9 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         status_code=HTTPStatus.ACCEPTED,
         response_model=PingAccepted,
     )
-    async def ingest_ping(visit_id: UUID, ping: PingRequest, session: Session) -> PingAccepted:
+    async def ingest_ping(
+        visit_id: UUID, ping: PingRequest, session: Session, bus: Bus
+    ) -> PingAccepted:
         """Record one ping (spec.md §4). INSERT-only; 409 if the visit is not ACTIVE.
 
         **The row lock is the point of this handler.** `advance_visit` reads a
@@ -296,7 +322,14 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         # reading and keeps the interval running. The closed visit is the more
         # fundamental fact (no payload could have succeeded), so it wins, and
         # the participant is told a cycle earlier than they would be otherwise.
-        visit.state = advance_visit(visit.state, VisitEvent.PING)
+        #
+        # Through `transition_visit` rather than `advance_visit` directly, so
+        # that this handler and the sweeper move a visit by the same call — and
+        # the events it produces are published like anyone else's, without this
+        # handler knowing that a ping's list is always empty. Knowing it here is
+        # what would let the rule be deleted over there without a test noticing
+        # (`events.transition_visit`).
+        events = transition_visit(visit, VisitEvent.PING, at=received_at)
 
         age_s = (received_at - ping.reported_at).total_seconds()
         if age_s > BACKFILL_GRACE_S:
@@ -334,6 +367,7 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         )
         visit.last_ping_at = received_at
         await session.commit()
+        bus.publish(events)
         return PingAccepted(received_at=received_at)
 
     return app

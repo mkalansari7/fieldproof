@@ -15,8 +15,9 @@ import os
 from collections.abc import AsyncIterator
 
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fieldproof.api import create_app
 from fieldproof.database import (
@@ -26,6 +27,7 @@ from fieldproof.database import (
     drop_schema,
     session_factory,
 )
+from fieldproof.events import EventBus
 
 TEST_DATABASE_URL = os.environ.get(
     "FIELDPROOF_TEST_DATABASE_URL", "postgresql+asyncpg:///fieldproof_test"
@@ -78,8 +80,33 @@ async def db(_schema: None) -> AsyncIterator[AsyncSession]:
 
 
 @pytest.fixture
-async def client(db: AsyncSession) -> AsyncIterator[AsyncClient]:
-    """The app, driven in-process over ASGI, against its **own** engine.
+async def factory(db: AsyncSession) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """A session factory on its own engine, for code that has to race `db`.
+
+    The sweeper is given this rather than `db` for the same reason the `client`
+    fixture gets its own engine: issue 04's row-lock obligation is a claim about
+    what two transactions do to each other, and a sweep sharing the test's
+    transaction cannot contend with it.
+
+    Depends on `db` so pytest finalises this engine before `db` empties the
+    tables.
+    """
+    engine = create_engine(TEST_DATABASE_URL)
+    try:
+        yield session_factory(engine)
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+def bus() -> EventBus:
+    """A fresh bus per test. Nothing is subscribed until a test subscribes."""
+    return EventBus()
+
+
+@pytest.fixture
+async def app(db: AsyncSession) -> AsyncIterator[FastAPI]:
+    """The application, on its **own** engine, with no lifespan run.
 
     Its own engine and therefore its own connections, which is the entire point:
     a test that shared `db`'s session with the handler would be testing a
@@ -87,15 +114,29 @@ async def client(db: AsyncSession) -> AsyncIterator[AsyncClient]:
     transactions do to each other — a ping arriving as a visit is sealed, two
     starts arriving at once — and neither is reproducible inside one.
 
+    No lifespan, so no sweeper: three sweeps running against every test's
+    fixtures would make the API tests race a background task none of them is
+    about. `test_sweeper` drives the lifespan explicitly for the one test that
+    is about it.
+
+    Separate from `client` because a few tests need the app itself — its
+    `state.bus` is the object the sweeper publishes to, and reaching it through
+    a client's private transport is not a thing tests should be doing.
+
     It depends on `db` so that pytest finalises this fixture first: the engine
     is disposed, and only then does `db`'s teardown try to delete every row.
     """
     engine = create_engine(TEST_DATABASE_URL)
     try:
-        async with AsyncClient(
-            transport=ASGITransport(app=create_app(engine=engine)),
-            base_url="http://fieldproof.test",
-        ) as client:
-            yield client
+        yield create_app(engine=engine)
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
+    """`app`, driven in-process over ASGI."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://fieldproof.test"
+    ) as client:
+        yield client
