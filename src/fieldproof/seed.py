@@ -20,10 +20,9 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from fieldproof.config import REPORT_DEADLINE_S
+from fieldproof.config import DEFAULT_REPORT_DEADLINE_S
 from fieldproof.database import clear_tables, create_engine, create_schema, session_factory
-from fieldproof.schema import Visit, new_assignment
-from fieldproof.transitions import VisitState
+from fieldproof.schema import new_assignment
 
 PARTICIPANT_NAME = "Sam Okonjo"
 """One pre-assigned participant, not a pool to claim from. The marketplace model is
@@ -33,13 +32,12 @@ NORMAL_ASSIGNMENT_ID = UUID("00000000-0000-4000-8000-000000000001")
 SHORT_DEADLINE_ASSIGNMENT_ID = UUID("00000000-0000-4000-8000-000000000002")
 SHORT_REPORT_DEADLINE_ASSIGNMENT_ID = UUID("00000000-0000-4000-8000-000000000003")
 
-SEEDED_VISIT_ID = UUID("00000000-0000-4000-8000-000000000010")
-
 DEMO_WINDOW_S = 180
 """How long a demoer waits for the sweeper to act. Three minutes: long enough to
 finish a sentence about the sweeper before it proves the point, short enough that
-nobody is watching a screen. It stands in for `deadline_at` on one assignment and
-for `REPORT_DEADLINE_S` on one visit; neither constant is changed to suit it."""
+nobody is watching a screen. It is the `deadline_at` offset on one assignment and
+the `report_deadline_s` on another; no constant in `config` is changed to suit
+the demo."""
 
 # Coordinates are real places so that the map in an internal audit view is not in
 # the sea. Edit them before a phone smoke test — the point of that test is to
@@ -83,26 +81,15 @@ async def seed(session: AsyncSession, *, now: datetime) -> None:
         )
     )
 
-    # UNREPORTED: the state lives on a *visit*, not an assignment, and it is only
-    # reachable from PENDING_REPORT. A demoer cannot produce one on demand — they
-    # would have to end a visit and then wait out REPORT_DEADLINE_S — so the seed
-    # supplies a visit already sealed and already late.
+    # UNREPORTED: a short report window, so a demoer starts a visit, ends it, and
+    # watches the sweeper lapse it three minutes later (spec.md §5, §7) instead of
+    # waiting out the 24h default.
     #
-    # The alternative was a per-assignment report window column, which would let a
-    # demoer drive this end to end from the participant flow. Rejected: spec.md §1
-    # lists exactly two columns that vary per assignment, REPORT_DEADLINE_S is a
-    # global operational timing, and a third column added for the demo's benefit
-    # would have to be read by the sweeper and the report handler forever after.
-    #
-    # The cost, which is real: PENDING_REPORT is non-terminal, so this row holds
-    # the partial unique index against its assignment. Starting a visit on
-    # Pelago Pharmacy is a 409 (spec.md §6) until the sweeper moves the row to
-    # UNREPORTED. That resolves itself within DEMO_WINDOW_S and is the same 409
-    # the participant flow already has to handle (issue 07), so it is left as is
-    # — but it means this assignment is the one to demo *last*, and it is why the
-    # other two carry no seeded visit.
-    started_at = now - timedelta(minutes=20)
-    ended_at = now - timedelta(minutes=5)
+    # The window is a column on the assignment, which is what keeps this
+    # order-independent: the seed plants no visit, so nothing holds the partial
+    # unique index and this assignment can be demoed at any point. Seeding a visit
+    # already in PENDING_REPORT would demo the same state one run earlier and 409
+    # anyone starting a visit here until it lapsed.
     session.add(
         new_assignment(
             id=SHORT_REPORT_DEADLINE_ASSIGNMENT_ID,
@@ -111,19 +98,8 @@ async def seed(session: AsyncSession, *, now: datetime) -> None:
             target_lat=KINGS_CROSS_LAT,
             target_lng=KINGS_CROSS_LNG,
             deadline_at=now + timedelta(days=7),
+            report_deadline_s=DEMO_WINDOW_S,
             created_at=now,
-        )
-    )
-    session.add(
-        Visit(
-            id=SEEDED_VISIT_ID,
-            assignment_id=SHORT_REPORT_DEADLINE_ASSIGNMENT_ID,
-            state=VisitState.PENDING_REPORT,
-            started_at=started_at,
-            ended_at=ended_at,
-            last_ping_at=ended_at,
-            report_deadline_at=now + timedelta(seconds=DEMO_WINDOW_S),
-            created_at=started_at,
         )
     )
 
@@ -151,12 +127,14 @@ def cli() -> None:
     """
     asyncio.run(main())
 
-    print(f"Seeded 3 assignments for {PARTICIPANT_NAME}.")
-    print(f"  normal                 /a/{NORMAL_ASSIGNMENT_ID}")
-    print(f"  expires in {DEMO_WINDOW_S}s        /a/{SHORT_DEADLINE_ASSIGNMENT_ID}")
-    print(f"  unreported in {DEMO_WINDOW_S}s     /a/{SHORT_REPORT_DEADLINE_ASSIGNMENT_ID}")
-    print(f"The real report window is {REPORT_DEADLINE_S}s; the seeded visit is already late.")
-    print("Start a visit on Pelago Pharmacy last: its seeded visit 409s until it lapses.")
+    print(f"Seeded 3 assignments for {PARTICIPANT_NAME}. No visits: every state is demoable.")
+    print(f"  {'normal':<22} /a/{NORMAL_ASSIGNMENT_ID}")
+    print(f"  {f'expires in {DEMO_WINDOW_S}s':<22} /a/{SHORT_DEADLINE_ASSIGNMENT_ID}")
+    print(f"  {f'{DEMO_WINDOW_S}s report window':<22} /a/{SHORT_REPORT_DEADLINE_ASSIGNMENT_ID}")
+    print(
+        f"End a visit on the last one and leave it: UNREPORTED {DEMO_WINDOW_S}s later, "
+        f"not {DEFAULT_REPORT_DEADLINE_S}s."
+    )
 
 
 if __name__ == "__main__":

@@ -3,7 +3,11 @@
 The judgement thresholds live in `verification.ScoringConfig`, where they are
 versioned and stamped onto every verdict (ADR-0002). What is here is the other
 two tables in spec.md §1: the operational timings, which no verdict depends on,
-and the defaults for the two columns that legitimately vary per assignment.
+and the defaults for the columns that legitimately vary per assignment.
+
+Three of those, not §1's original two: `report_deadline_s` moved here from the
+operational timings, because the write-up window is a fact about the task rather
+than about the server. §1 and §2 are updated to match.
 
 `SCORING_CONFIG` is the one live instance of the thresholds. Named here so that
 assignment creation, the report handler and any re-scoring all reach for the same
@@ -26,6 +30,17 @@ DEFAULT_MIN_DURATION_S = 300
 """A coffee run and a bank branch audit are not the same task. Above
 `ScoringConfig.sufficiency_s`, which `verification.check_terms` enforces."""
 
+DEFAULT_REPORT_DEADLINE_S = 86_400
+"""24 hours to write up a sealed visit. `UNREPORTED` is unrecoverable — the
+participant has already left the site and cannot re-run a visit to attach prose —
+so the default has to be generous.
+
+Per assignment rather than global, and therefore listed here rather than under
+the operational timings below: how long a write-up may take is a fact about the
+*task* — a same-day mystery-shop report and a monthly compliance audit differ the
+way `radius_m` and `min_duration_s` differ — not a property of the server. It is
+read once, when a visit is sealed, to set that visit's `report_deadline_at`."""
+
 # ---------------------------------------------------------------- operational timings
 
 PING_INTERVAL_S = 15
@@ -39,10 +54,6 @@ ABANDON_AFTER_S = 900
 chosen: iOS Safari suspends JS entirely on screen lock, and a ~5 minute lock
 produced a single 297.8s gap (`docs/design.md`). Anything shorter marks honest
 visits abandoned."""
-
-REPORT_DEADLINE_S = 86_400
-"""24 hours. `UNREPORTED` is unrecoverable — the participant has already left the
-site and cannot re-run a visit to attach prose — so it has to be generous."""
 
 BACKFILL_GRACE_S = 60
 """Pings whose client clock is older than this are rejected (spec.md §4).

@@ -303,3 +303,29 @@ reader.
   one. It removed an `Assignment.terms` property it had written for
   the same reason, which is the harder half of that argument to
   apply to your own code.
+- **Reversed the seeded-visit decision the day it landed.** I told it
+  the report window is a task fact — same family as `radius_m` and
+  `min_duration_s` — so it belongs on the assignment, and the seed
+  should plant no visit at all. It took the reversal cleanly, moved
+  `REPORT_DEADLINE_S` out of the operational timings into
+  `DEFAULT_REPORT_DEADLINE_S`, and updated `spec.md` in three places
+  rather than leaving the spec disagreeing with the code. Worth
+  noting what it did *not* do: it didn't defend the previous version,
+  and it didn't quietly keep the seeded visit "just in case". The old
+  reasoning stays in the issue as the reasoning that was reversed,
+  with §9's own wording noted as always having fitted the new shape
+  better.
+- Two things it volunteered that I hadn't asked for and wanted: that
+  `visit.report_deadline_at` must be *stamped* at end rather than
+  derived from the assignment on read, or widening a window later
+  would make an already-late visit on-time again; and that with no
+  Alembic, `create_all` won't add the new column to a database that
+  already exists, so anyone holding one has to drop and rebuild. The
+  second is the cost of the no-migrations seam coming due for the
+  first time, one day after we chose it.
+- The replacement tests were green on arrival again, and it said so
+  again, in the same paragraph as the original eleven mutations —
+  including that one of those eleven no longer exists to run because
+  the row it mutated is gone. The temptation with a reversal is to
+  quietly re-bank the test count; it didn't, and it corrected the
+  count in the issue header instead (33 → 35).

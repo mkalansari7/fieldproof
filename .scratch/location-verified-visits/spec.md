@@ -25,6 +25,7 @@ and the reason config is split rather than global):
 | --- | --- | --- |
 | `radius_m` | `100` | **Must clear the indoor accuracy floor.** Conclusive-inside needs `d + a < R`; indoor accuracy runs 30–100m, so R=50 makes every visit unverifiable. A kiosk and a shopping mall genuinely differ. |
 | `min_duration_s` | `300` | A coffee run and a bank branch audit are not the same task. |
+| `report_deadline_s` | `86400` | 24h to write up a sealed visit. `UNREPORTED` is unrecoverable — the participant has left the site and cannot re-run a visit to attach prose — so the default is generous. Per assignment because how long a write-up may take is a task fact: a same-day mystery shop and a monthly compliance audit differ. Read once, when a visit is sealed, to stamp that visit's `report_deadline_at`. |
 
 **Invariant: `min_duration_s >= SUFFICIENCY_S`.** These two are set in different
 places — one per assignment, one in global config — and the interaction is not
@@ -46,7 +47,6 @@ Operational timings:
 | `PING_INTERVAL_S` | `15` | Client cadence. |
 | `SWEEP_TICK_S` | `10` | Sweeper loop. |
 | `ABANDON_AFTER_S` | `900` | 15 min. Derived from measurement, not chosen — see `docs/experiments/` and `docs/design.md`. iOS Safari suspends JS *entirely* on screen lock; a 5-minute lock produced a single 297.8s gap. Any shorter timeout marks honest visits abandoned. |
-| `REPORT_DEADLINE_S` | `86400` | 24h. `UNREPORTED` is unrecoverable — the participant has already left the site and cannot re-run a visit to attach prose — so it must be generous. |
 | `BACKFILL_GRACE_S` | `60` | Pings whose client time is older than this are rejected (ADR: trust boundary, §4). |
 
 ## 2. Schema
@@ -55,6 +55,7 @@ Operational timings:
 assignment
   id, business_name, participant_name          -- seeded; no auth in this slice
   target_lat, target_lng, radius_m, min_duration_s
+  report_deadline_s                            -- stamped onto visit.report_deadline_at at end
   deadline_at
   state          ASSIGNED | EXPIRED | FULFILLED
   created_at
@@ -241,8 +242,12 @@ API handlers use, so the dashboard cannot tell which path produced an event.
 ## 9. Seed
 
 Three assignments against one participant: a normal one; one with a short
-`deadline_at` to demo `EXPIRED`; one whose visits get a short
-`report_deadline_at` to demo `UNREPORTED` inside a debrief rather than in 24h.
+`deadline_at` to demo `EXPIRED`; one with a short `report_deadline_s`, so a visit
+ended and left unwritten goes `UNREPORTED` inside a debrief rather than in 24h.
+
+No seeded visits. Every visit state is reached by doing the thing, in any order:
+a seeded `PENDING_REPORT` visit is non-terminal, so it would hold the partial
+unique index and 409 anyone starting a visit on that assignment until it lapsed.
 
 ## 10. Out of scope — stated, not hidden
 

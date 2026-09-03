@@ -14,6 +14,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fieldproof.config import DEFAULT_REPORT_DEADLINE_S
 from fieldproof.schema import (
     Assignment,
     Ping,
@@ -313,6 +314,32 @@ def test_the_default_terms_are_coherent() -> None:
     )
     assert assignment.radius_m == 100
     assert assignment.min_duration_s == 300
+
+
+async def test_the_report_window_defaults_to_the_real_one_and_varies_per_assignment(
+    db: AsyncSession,
+) -> None:
+    """`report_deadline_s` is a task fact like `radius_m` (spec.md §1), so shortening
+    it for one assignment must leave every other assignment on the 24h default. The
+    seed depends on exactly this: one three-minute window, two real ones."""
+    default = await make_assignment(db)
+    short = new_assignment(
+        business_name="Pelago Pharmacy",
+        participant_name="Sam Participant",
+        target_lat=51.5308,
+        target_lng=-0.1238,
+        deadline_at=NOW + timedelta(days=7),
+        report_deadline_s=180,
+        created_at=NOW,
+    )
+    db.add(short)
+    await db.commit()
+
+    stored = {
+        assignment.id: assignment.report_deadline_s
+        for assignment in (await db.scalars(select(Assignment))).all()
+    }
+    assert stored == {default.id: DEFAULT_REPORT_DEADLINE_S, short.id: 180}
 
 
 # ------------------------------------------------------------ the scan indexes

@@ -40,7 +40,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from fieldproof.config import DEFAULT_MIN_DURATION_S, DEFAULT_RADIUS_M, SCORING_CONFIG
+from fieldproof.config import (
+    DEFAULT_MIN_DURATION_S,
+    DEFAULT_RADIUS_M,
+    DEFAULT_REPORT_DEADLINE_S,
+    SCORING_CONFIG,
+)
 from fieldproof.transitions import NON_TERMINAL_VISIT_STATES, AssignmentState, VisitState
 from fieldproof.verification import (
     AssignmentTerms,
@@ -92,6 +97,19 @@ class Assignment(Base):
     radius_m: Mapped[float] = mapped_column(Float, default=DEFAULT_RADIUS_M)
     min_duration_s: Mapped[int] = mapped_column(Integer, default=DEFAULT_MIN_DURATION_S)
 
+    report_deadline_s: Mapped[int] = mapped_column(Integer, default=DEFAULT_REPORT_DEADLINE_S)
+    """How long this assignment's visits get to file a report, in seconds.
+
+    A duration, not an instant: the deadline it produces belongs to the visit,
+    because the clock starts when that visit is sealed. Whoever ends a visit
+    reads this and writes `visit.report_deadline_at = ended_at + this` (issue 08);
+    the sweeper then compares against that column and never reads this one.
+
+    Per assignment for the same reason as `radius_m` and `min_duration_s`: the
+    write-up window is a task fact. It is also what makes `UNREPORTED` demoable
+    without seeding a visit — see `seed.py`.
+    """
+
     deadline_at: Mapped[datetime] = mapped_column(_Timestamp)
     state: Mapped[AssignmentState] = mapped_column(
         _enum(AssignmentState, "assignment_state"), default=AssignmentState.ASSIGNED
@@ -114,6 +132,7 @@ def new_assignment(
     created_at: datetime,
     radius_m: float = DEFAULT_RADIUS_M,
     min_duration_s: int = DEFAULT_MIN_DURATION_S,
+    report_deadline_s: int = DEFAULT_REPORT_DEADLINE_S,
     id: UUID | None = None,
     config: ScoringConfig = SCORING_CONFIG,
 ) -> Assignment:
@@ -137,6 +156,7 @@ def new_assignment(
         target_lng=target_lng,
         radius_m=radius_m,
         min_duration_s=min_duration_s,
+        report_deadline_s=report_deadline_s,
         deadline_at=deadline_at,
         state=AssignmentState.ASSIGNED,
         created_at=created_at,
@@ -205,6 +225,13 @@ class Visit(Base):
     """
 
     report_deadline_at: Mapped[datetime | None] = mapped_column(_Timestamp, default=None)
+    """Null until the visit is sealed, then `ended_at + assignment.report_deadline_s`.
+
+    Stamped rather than derived on read: the window is a column on the assignment
+    and columns get edited, and a visit that was already late must not become
+    on-time again because someone widened the assignment afterwards.
+    """
+
     created_at: Mapped[datetime] = mapped_column(_Timestamp)
 
     __table_args__ = (
