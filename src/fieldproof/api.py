@@ -18,6 +18,11 @@ believed on its own terms. Three rules, and this module holds all three:
 
 The two status codes are not interchangeable, and issue 07's client depends on
 which one it gets (see `Reason`).
+
+The dashboard's two routes are the other side of the boundary: what the
+*business* is shown, which is verdicts and never the trail (ADR-0005). Their
+shape and the snapshot-then-stream protocol live in `dashboard`; this module
+only puts them on the wire.
 """
 
 from collections.abc import AsyncIterator
@@ -29,13 +34,14 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from fieldproof.config import BACKFILL_GRACE_S
+from fieldproof.dashboard import DashboardSnapshot, encode, snapshot, stream
 from fieldproof.database import create_engine, session_factory
 from fieldproof.events import EventBus, transition_visit, visit_started
 from fieldproof.schema import ONE_NON_TERMINAL_VISIT_INDEX, Assignment, Ping, Visit
@@ -370,6 +376,63 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         bus.publish(events)
         return PingAccepted(received_at=received_at)
 
+    @app.get("/api/dashboard", response_model=DashboardSnapshot)
+    async def dashboard(session: Session) -> Response:
+        """The complete dashboard state (spec.md §6). The stream's first event, as JSON.
+
+        Returns a `Response` built from `model_dump_json` rather than the model
+        itself, so that this body and the stream's `snapshot` event come out of
+        the same serialiser. FastAPI's own path would agree today; this makes
+        agreeing not a thing that can drift.
+        """
+        return Response(
+            content=(await snapshot(session)).model_dump_json(),
+            media_type="application/json",
+        )
+
+    @app.get("/api/dashboard/stream")
+    async def dashboard_stream(request: Request, bus: Bus) -> StreamingResponse:
+        """Snapshot, then deltas, for as long as the client stays (ADR-0006).
+
+        **No `Session` dependency, on purpose.** A request-scoped session lives
+        as long as the response does, and this response lives as long as the
+        browser tab: that is one pooled connection per open dashboard, held to
+        serve one query. The stream opens its own session for exactly the
+        snapshot and closes it before the first event is written.
+
+        Disconnection is handled by Starlette: when the socket closes it cancels
+        the task iterating this generator, the cancellation lands inside
+        `dashboard.stream` at its wait on the queue, and the subscription's
+        context manager unregisters the queue. A socket that goes silent
+        without closing is caught by the keepalive instead
+        (`config.SSE_KEEPALIVE_S`): the next write fails, with the same result.
+
+        `Cache-Control: no-cache` because a cached event stream is a stale
+        dashboard that never updates; `X-Accel-Buffering: no` so an nginx in
+        front does not hold the snapshot back until the buffer fills.
+
+        **An open stream holds up shutdown, and only the server's config can
+        bound that.** On SIGTERM uvicorn stops accepting, then waits for every
+        in-flight response to finish before it runs the lifespan's shutdown —
+        and a stream finishes when the browser tab closes, not before. Its
+        default wait is unbounded (measured: a server with one dashboard open
+        was still up 10s after SIGTERM; with the flag, down in 2.2s). Nothing
+        in the application can shorten it, because the lifespan hook that
+        could tell streams to stop runs *after* the wait. Serve with
+        `--timeout-graceful-shutdown <s>`; see `app` below.
+        """
+        factory: async_sessionmaker[AsyncSession] = request.app.state.session_factory
+
+        async def take_snapshot() -> DashboardSnapshot:
+            async with factory() as session:
+                return await snapshot(session)
+
+        return StreamingResponse(
+            (encode(frame) async for frame in stream(bus, take_snapshot)),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     return app
 
 
@@ -386,4 +449,12 @@ def _violated_index(exc: IntegrityError) -> str | None:
 
 
 app = create_app()
-"""The application `uvicorn fieldproof.api:app` serves. Owns its own engine."""
+"""The application uvicorn serves. Owns its own engine.
+
+    uvicorn fieldproof.api:app --timeout-graceful-shutdown 5
+
+The flag is not optional once a dashboard is open: without it, uvicorn's
+shutdown waits for the SSE stream to end, which is when the tab closes
+(`dashboard_stream`). Five seconds is long enough for any request that is not
+a stream to finish.
+"""

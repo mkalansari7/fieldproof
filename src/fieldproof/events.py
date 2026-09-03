@@ -152,6 +152,16 @@ class EventBus:
     def __init__(self) -> None:
         self._subscribers: set[asyncio.Queue[Event]] = set()
 
+    @property
+    def subscribers(self) -> int:
+        """How many queues are registered right now.
+
+        Exists for the tests that check issue 06's leak: a stream that has ended
+        by any route — client gone, consumer cancelled, snapshot failed — must
+        leave this at what it was before. Nothing in the serving path reads it.
+        """
+        return len(self._subscribers)
+
     @contextmanager
     def subscribe(self) -> Iterator[asyncio.Queue[Event]]:
         """A queue receiving every event published while the block is open.

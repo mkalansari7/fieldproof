@@ -59,3 +59,13 @@ BACKFILL_GRACE_S = 60
 """Pings whose client clock is older than this are rejected (spec.md §4).
 Deliberately the same 60s as `ScoringConfig.gap_attribution_limit_s`: one
 concept, two uses."""
+
+SSE_KEEPALIVE_S = 15
+"""How long a quiet dashboard stream goes between comment frames.
+
+A subscriber that vanishes without closing its socket — a phone walking out of
+coverage — is invisible to the server until the server tries to write to it.
+The keepalive is that write: it turns "a queue held forever" (issue 06's named
+risk) into "a queue held for at most this long", and it keeps intermediaries
+from timing the connection out as idle. Same cadence as `PING_INTERVAL_S`, for
+no deeper reason than that one rhythm is easier to reason about than two."""
