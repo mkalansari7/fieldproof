@@ -1,0 +1,59 @@
+# Postgres for a fresh clone, so that a machine with no Postgres on it can run
+# the project without installing one. A local install keeps working untouched:
+# `database.py` still defaults to the unix socket, and nothing here binds it.
+#
+#   docker compose up -d --wait
+#   export FIELDPROOF_DATABASE_URL=postgresql+asyncpg://fieldproof:fieldproof@localhost:5433/fieldproof
+#   export FIELDPROOF_TEST_DATABASE_URL=postgresql+asyncpg://fieldproof:fieldproof@localhost:5433/fieldproof_test
+#   .venv/bin/python -m fieldproof.seed
+#
+# The two env vars are the whole integration surface (CLAUDE.md): the container
+# is reached over TCP, which the socket-shaped default URL cannot express, so
+# the override is not optional here the way it is for a local install.
+
+name: fieldproof
+
+services:
+  postgres:
+    # 16 rather than the 14 a Homebrew install is likely to be. Nothing in the
+    # schema is version-specific — partial unique indexes, native enums and
+    # timestamptz are all long-settled — so the two paths do not diverge.
+    image: postgres:16
+    ports:
+      # 5433, and bound to loopback. A local Postgres owns 5432 on a development
+      # machine here, and taking it would make the two paths exclusive rather
+      # than parallel — which is the opposite of the point.
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_USER: fieldproof
+      POSTGRES_PASSWORD: fieldproof
+      POSTGRES_DB: fieldproof
+    configs:
+      - source: create_test_database
+        target: /docker-entrypoint-initdb.d/10-create-test-database.sql
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # `-h 127.0.0.1` deliberately. The image runs a temporary server on the
+      # unix socket while it executes the init scripts, so a socket-based
+      # pg_isready reports healthy before `fieldproof_test` exists and
+      # `--wait` returns too early. TCP only opens once init is done.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U fieldproof -d fieldproof"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+configs:
+  create_test_database:
+    # The image creates `POSTGRES_DB` and only that one; `conftest.py` needs a
+    # second. Inline rather than a sibling .sql file so the fresh-clone path
+    # stays one file — needs Compose v2.23+ for `content:`.
+    #
+    # Init scripts run once, against an empty data directory. Editing this after
+    # the fact does nothing until `docker compose down -v` discards the volume.
+    content: |
+      CREATE DATABASE fieldproof_test OWNER fieldproof;
+
+volumes:
+  pgdata:
