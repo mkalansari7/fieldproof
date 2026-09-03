@@ -157,7 +157,7 @@ implementation existed.
 
 Built TDD with the tdd skill. Seams were agreed before any test was written,
 which is the step that made the review below cheap: all four findings are about
-the *boundary*, and the boundary was the thing we had argued about first.
+the _boundary_, and the boundary was the thing we had argued about first.
 
 - **My finding, and the sharpest one: `min_duration_s` vs `SUFFICIENCY_S`.**
   `SUFFICIENCY_S` is global, `min_duration_s` is per-assignment, and nothing
@@ -175,7 +175,7 @@ the *boundary*, and the boundary was the thing we had argued about first.
   `h` peaks one ulp above 1.0 and `sqrt` rounds it back to exactly 1.0, and said
   it could not produce the crash. It added the `min(1.0, ...)` clamp anyway on
   the grounds that `sin`/`cos` are platform libm calls with no correct-rounding
-  guarantee, but tested the antipodal *distance* rather than asserting an
+  guarantee, but tested the antipodal _distance_ rather than asserting an
   exception that never fires. Right call — the test I half-asked for would have
   been theatre.
 - **`haversine_m` moved to `geo.py`.** My point, and it turned out stronger than
@@ -195,7 +195,7 @@ the *boundary*, and the boundary was the thing we had argued about first.
   choices up with recommendations; all three were taken. The one
   that mattered: `start_visit` as a separate function rather than a
   `START` event with a `None` from-state. It means `ABANDONED ->
-  ACTIVE` is not in the type at all, so ADR-0001's "no resurrection"
+ACTIVE` is not in the type at all, so ADR-0001's "no resurrection"
   is a thing the machine cannot express rather than a rule it
   enforces.
 - The other one worth noting: `VisitCompleted` carries the verdict
@@ -212,7 +212,7 @@ the *boundary*, and the boundary was the thing we had argued about first.
   class of comment that gets believed for years.
 - Exhaustive table was green on arrival. Rather than bank it, the
   agent mutated the implementation — smuggled `(ABANDONED, PING) ->
-  ACTIVE` into the table — confirmed the test failed, and reverted.
+ACTIVE` into the table — confirmed the test failed, and reverted.
   This is the right instinct for a test that costs nothing to write
   and could easily assert nothing.
 - Honest accounting again: 7 of 10 cycles genuinely red and driving
@@ -223,7 +223,7 @@ the *boundary*, and the boundary was the thing we had argued about first.
   direction to the `geo.py` split, where zero internal callers was
   the tell. Argument offered is that `Verdict` is verification's
   output type rather than an incidental utility, and ADR-0004 is
-  *about* the coupling between a verdict and fulfilment.
+  _about_ the coupling between a verdict and fulfilment.
 
 ## 2026-09-03 — issue 03 reviewed by me
 
@@ -257,7 +257,7 @@ reader.
 - Seams put up before any test again, three choices with
   recommendations. I overrode one: the agent recommended SQLite on
   the strength of issue 10's fresh-clone test, I chose Postgres. It
-  took the override and then found the argument *for* my choice that
+  took the override and then found the argument _for_ my choice that
   it had missed — `timestamptz` is native, so the repo's
   timezone-aware rule holds at the driver boundary instead of needing
   a custom type to defend it against SQLite's naive strings. It also
@@ -280,7 +280,7 @@ reader.
   auth and trail purge" — §10 names six things and migrations is not
   among them. Same failure mode as issue 03's exhaustiveness
   overclaim: a true-sounding sentence that cites a real document and
-  is not in it. It now says the opposite plainly — §10 does *not*
+  is not in it. It now says the opposite plainly — §10 does _not_
   cover this, so the decision is recorded where it was made.
 - The other one is the better catch and came from the spec axis, not
   the agent: the seeded `PENDING_REPORT` visit that makes `UNREPORTED`
@@ -310,13 +310,13 @@ reader.
   `REPORT_DEADLINE_S` out of the operational timings into
   `DEFAULT_REPORT_DEADLINE_S`, and updated `spec.md` in three places
   rather than leaving the spec disagreeing with the code. Worth
-  noting what it did *not* do: it didn't defend the previous version,
+  noting what it did _not_ do: it didn't defend the previous version,
   and it didn't quietly keep the seeded visit "just in case". The old
   reasoning stays in the issue as the reasoning that was reversed,
   with §9's own wording noted as always having fitted the new shape
   better.
 - Two things it volunteered that I hadn't asked for and wanted: that
-  `visit.report_deadline_at` must be *stamped* at end rather than
+  `visit.report_deadline_at` must be _stamped_ at end rather than
   derived from the assignment on read, or widening a window later
   would make an already-late visit on-time again; and that with no
   Alembic, `create_all` won't add the new column to a database that
@@ -329,3 +329,75 @@ reader.
   the row it mutated is gone. The temptation with a reversal is to
   quietly re-bank the test count; it didn't, and it corrected the
   count in the issue header instead (33 → 35).
+
+## 2026-09-03 — build, issue 04, ping ingest
+
+- Four seam questions answered before code, two argued back
+  correctly. Stale-ping status: I framed it as a conflict shaped
+  like 409; the agent argued 422 from the client's own rule in
+  spec §8 — 409 is terminal for the participant page, and iOS
+  resuming a tab can serve one cached stale fix from inside the
+  store, so a 409 there would end a live visit over one bad
+  reading. 422 means "dropped this reading, keep going." The
+  status code choice is downstream of the state machine, and it
+  had the better read of our own spec.
+- The row-lock question: I asked it to name the race before
+  recommending. It rejected the two obvious candidates
+  (last_ping_at last-writer-wins is harmless; start is refereed
+  by the partial unique index) and found the real one — between
+  advance_visit reading ACTIVE and the ping INSERT sits an await,
+  and under READ COMMITTED the sweeper's abandon or /end's seal
+  can commit invisibly in that gap, landing a ping on a sealed
+  trail (the negative-unattributed_s corruption issue 02
+  documented as a caller precondition). SELECT ... FOR UPDATE OF
+  visit makes check-and-write one decision. It created an explicit
+  obligation on issues 05 and 08 to hold the same discipline.
+- Two validations I never asked for, both real: accuracy_m ge=0 —
+  classify reads accuracy as a half-width, so a NEGATIVE accuracy
+  shrinks the uncertainty interval and turns a ping 900m outside
+  into conclusively inside, a spoofing vector hiding in a type
+  constraint; and reported_at as AwareDatetime, refusing naive
+  timestamps rather than guessing a zone.
+- Response model withholds judgement deliberately: PingAccepted
+  carries received_at and nothing about classification, so a
+  spoofer cannot play "walk until it says inside" — the
+  live-feedback calibration risk from the design session, enforced
+  at the schema level.
+- Mutation accounting stayed honest: 12 of 13 caught, and the miss
+  is documented on the test itself (the rollback, not the
+  assertion, is what holds it).
+
+## 2026-09-03 — build, issue 05, sweeper and event bus
+
+- Mutation campaign found two REAL design defects, not test gaps:
+  transition_visit's self-loop guard was unobservable from its only
+  caller (ingest_ping discarded the return; transition_visit now
+  returns list[Event] and ingest publishes it unexamined), and
+  stop_sweeper's bare await would hang forever on a task that
+  swallowed cancellation — in production, a server that never
+  exits. Now bounded (asyncio.wait with a timeout) with a logged
+  give-up: the process is going down either way, and the only thing
+  left to do about a sweeper that will not stop is to say so.
+- Six of sixteen first-pass mutations were initially missed; each
+  closure is recorded per-mutation in the issue. The pattern in the
+  misses: every sweep test handed the sweeper a bus, so publishing
+  into a void passed everything — closed by one test that runs the
+  real lifespan, real task, real bus.
+- The 04 lock obligation was paid on all three sweeps, each with a
+  staged-interleaving test that fails without the lock. Two of the
+  three are locked against writers that don't exist until issue 08
+  — the obligation was carried forward, not just satisfied locally.
+- One spec-level finding handed forward rather than decided by the
+  agent: an assignment can expire beneath a live visit (started
+  16:59, deadline 17:00), leaving a completed report unable to
+  fulfil. Implemented as spec-written, pinned by a test, and routed
+  to me. Decided: option A — the expiry sweep skips assignments
+  with a non-terminal visit; deadline means "start by". Recorded in
+  issue 08 for implementation there.
+- Context management became part of the work: at ~180k tokens the
+  session entered a polish-and-verify loop on already-proven code
+  (each pass producing a genuinely good but unnecessary refinement,
+  then a fresh mutation round to verify it). Stopped with a closed
+  three-item checklist; the report was extracted cleanly. Directing
+  the agent includes noticing when its context, not its judgement,
+  is driving.
