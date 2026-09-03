@@ -34,6 +34,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -203,6 +204,16 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
                 await owned.dispose()
 
     app = FastAPI(title="fieldproof", lifespan=lifespan)
+    # Deliberately wide open for the slice: there is no auth and nothing is
+    # sent with credentials (spec.md §10), so there is nothing an origin
+    # allowlist would protect. Issue 07's Angular dev server and the phone
+    # smoke test both talk to this API from another origin and need this.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.bus = EventBus()
     if engine is not None:
         app.state.session_factory = session_factory(engine)
