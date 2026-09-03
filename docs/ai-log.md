@@ -401,3 +401,17 @@ reader.
   three-item checklist; the report was extracted cleanly. Directing
   the agent includes noticing when its context, not its judgement,
   is driving.
+
+## 2026-09-03 — end-to-end phone smoke test (passed)
+
+- Real iPhone → CORS → API → state machine → bus → SSE, all live.
+  201 on start, 202 pings at 15s cadence, deltas on the stream.
+- Accidental full rehearsal of abandonment: the first (CORS-mute)
+  visit timed out at 15 min and its ABANDONED event arrived on the
+  stream unprompted — sweeper + bus + SSE proven end-to-end by a
+  real bug.
+- Found for issue 07: iOS refuses geolocation to non-HTTPS origins
+  — dev server must run --ssl. Smoke test completed with stubbed
+  coords; real GPS was proven separately on 2026-09-01.
+- CORS middleware added (was always needed for 07); GitHub SSH
+  moved to 443 — home network blocks port 22.

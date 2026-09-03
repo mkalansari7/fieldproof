@@ -1,0 +1,49 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<h2>Fieldproof smoke test</h2>
+<button id="go" style="font-size: 1.5em; padding: 0.5em 1em">
+  Start visit + ping
+</button>
+<p id="status">idle</p>
+<ol id="log" reversed></ol>
+<script>
+  const API = "http://172.20.10.5:8000/api";
+  const ASSIGNMENT = "00000000-0000-4000-8000-000000000001";
+  let visitId = null,
+    timer = null;
+  const say = (m) => {
+    const li = document.createElement("li");
+    li.textContent = new Date().toLocaleTimeString() + " — " + m;
+    document.getElementById("log").prepend(li);
+  };
+  async function sendPing(pos) {
+    const body = {
+      lat: pos.coords.latitude,
+      lng: pos.coords.longitude,
+      accuracy_m: pos.coords.accuracy,
+      reported_at: new Date().toISOString().replace("Z", "+00:00"),
+    };
+    const r = await fetch(`${API}/visits/${visitId}/pings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    say(`ping → ${r.status} (acc ${Math.round(pos.coords.accuracy)}m)`);
+  }
+  document.getElementById("go").onclick = async () => {
+    const r = await fetch(`${API}/assignments/${ASSIGNMENT}/visits`, {
+      method: "POST",
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      say(`start → ${r.status}: ${JSON.stringify(d)}`);
+      return;
+    }
+    visitId = d.id ?? d.visit_id;
+    say(`visit started: ${visitId}`);
+    document.getElementById("status").textContent = "pinging every 15s";
+    timer = setInterval(() => {
+      sendPing({ coords: { latitude: 29.33, longitude: 47.97, accuracy: 15 } });
+    }, 15000);
+  };
+</script>
