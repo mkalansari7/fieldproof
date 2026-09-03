@@ -172,7 +172,19 @@ no special case: duration passes, then `attributed_total == 0 < SUFFICIENCY_S`.
 - `received_at` is server-stamped and is the sole basis for ordering and scoring.
 - `reported_at` is stored, never scored on; large skew is a tamper signal.
 - A ping for a visit not in `ACTIVE` is **409**, always.
-- A ping whose `reported_at` is more than `BACKFILL_GRACE_S` old is rejected.
+- A ping whose `reported_at` is more than `BACKFILL_GRACE_S` old is rejected with
+  **422**, and the two codes are not interchangeable. 409 says the visit is over
+  and the client stops for good (§8); 422 says this one reading is not usable and
+  the interval keeps running. A stale ping is not a conflict with the visit's
+  state — the same visit accepts the next ping 15 seconds later — and answering
+  409 to it would end a live visit on a cached fix. Only staleness is rejected: a
+  `reported_at` in the future is stored, because nothing is scored on it and the
+  disagreement is the signal.
+- Both can hold at once, and **409 wins**: a tab resuming from a screen lock
+  posts an old fix at a visit the sweeper already abandoned. The closed visit is
+  the fact the client can act on.
+- Every error body is `{"reason": ..., "message": ...}`. The client branches on
+  `reason`, never on prose or on 4xx alone.
 - No client-side buffering and flush-on-resume. It is incompatible with the
   grace window, and gaps are legitimate signal rather than data to be recovered.
 
@@ -208,8 +220,8 @@ participant starts a new visit against the same assignment (ADR-0001).
 
 ```
 GET  /api/assignments/{id}                 participant landing
-POST /api/assignments/{id}/visits          start          409 if non-terminal visit exists
-POST /api/visits/{id}/pings                202            409 if not ACTIVE
+POST /api/assignments/{id}/visits          201            409 if non-terminal visit exists
+POST /api/visits/{id}/pings                202            409 if not ACTIVE, 422 if stale
 POST /api/visits/{id}/end                  -> PENDING_REPORT
 POST /api/visits/{id}/report               -> COMPLETED, runs verification
 GET  /api/dashboard                        snapshot (same payload as SSE event 1)

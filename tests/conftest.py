@@ -15,8 +15,10 @@ import os
 from collections.abc import AsyncIterator
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from fieldproof.api import create_app
 from fieldproof.database import (
     clear_tables,
     create_engine,
@@ -71,5 +73,29 @@ async def db(_schema: None) -> AsyncIterator[AsyncSession]:
         async with factory() as cleanup:
             await clear_tables(cleanup)
             await cleanup.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def client(db: AsyncSession) -> AsyncIterator[AsyncClient]:
+    """The app, driven in-process over ASGI, against its **own** engine.
+
+    Its own engine and therefore its own connections, which is the entire point:
+    a test that shared `db`'s session with the handler would be testing a
+    handler that cannot race anything. Issue 04's boundary is about what two
+    transactions do to each other — a ping arriving as a visit is sealed, two
+    starts arriving at once — and neither is reproducible inside one.
+
+    It depends on `db` so that pytest finalises this fixture first: the engine
+    is disposed, and only then does `db`'s teardown try to delete every row.
+    """
+    engine = create_engine(TEST_DATABASE_URL)
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=create_app(engine=engine)),
+            base_url="http://fieldproof.test",
+        ) as client:
+            yield client
     finally:
         await engine.dispose()

@@ -46,6 +46,7 @@ from fieldproof.config import (
     DEFAULT_REPORT_DEADLINE_S,
     SCORING_CONFIG,
 )
+from fieldproof.geo import TargetLocation
 from fieldproof.transitions import NON_TERMINAL_VISIT_STATES, AssignmentState, VisitState
 from fieldproof.verification import (
     AssignmentTerms,
@@ -121,6 +122,17 @@ class Assignment(Base):
         Index("ix_assignment_state_deadline_at", "state", "deadline_at"),
     )
 
+    @property
+    def target(self) -> TargetLocation:
+        """The three target columns as the one thing CONTEXT.md calls them.
+
+        Added now and not in issue 01 because ingest is the first caller that
+        wants all three together. `terms` still is not here: `AssignmentTerms`
+        gets built where verification is run (issue 08), and this class does not
+        acquire a property before something asks for it.
+        """
+        return TargetLocation(lat=self.target_lat, lng=self.target_lng, radius_m=self.radius_m)
+
 
 def new_assignment(
     *,
@@ -175,6 +187,16 @@ The frozenset is named over there precisely so this index can agree with it: a
 state added to the machine and not to this predicate would let two live visits
 exist against one assignment, which is the one thing ADR-0001 forbids and the
 one thing application code cannot reliably prevent under concurrency.
+"""
+
+ONE_NON_TERMINAL_VISIT_INDEX = "ux_visit_one_non_terminal_per_assignment"
+"""The partial unique index's name, as Postgres reports it in a violation.
+
+Named rather than left a literal because the API reads it back: two concurrent
+starts race past `transitions.start_visit` and one of them loses here, and the
+handler recognises *which* rule refused it by this name before answering 409
+(`api.open_visit`). A rename that missed that call site would turn the losing
+racer into a 500.
 """
 
 
@@ -242,7 +264,7 @@ class Visit(Base):
         # is a handful of rows. Revisit if that stops being true.
         Index("ix_visit_state_last_ping_at", "state", "last_ping_at"),
         Index(
-            "ux_visit_one_non_terminal_per_assignment",
+            ONE_NON_TERMINAL_VISIT_INDEX,
             "assignment_id",
             unique=True,
             postgresql_where=text(_NON_TERMINAL_PREDICATE),
