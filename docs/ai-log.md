@@ -188,3 +188,66 @@ the *boundary*, and the boundary was the thing we had argued about first.
   now carries its rationale in code — we do not split a crossing interval because
   we never observe the crossing, and an invented number would sit in a field the
   business reads as measured.
+
+## 2026-09-03 — build, issue 03 (/tdd)
+
+- Seams agreed before any test, as with issue 02. Agent put three
+  choices up with recommendations; all three were taken. The one
+  that mattered: `start_visit` as a separate function rather than a
+  `START` event with a `None` from-state. It means `ABANDONED ->
+  ACTIVE` is not in the type at all, so ADR-0001's "no resurrection"
+  is a thing the machine cannot express rather than a rule it
+  enforces.
+- The other one worth noting: `VisitCompleted` carries the verdict
+  that `advance_assignment` then refuses to read. The agent's
+  argument for it over a bare enum member — which has the cleaner
+  signature — was that a bare member makes ADR-0004 unfalsifiable:
+  no input to vary, so the test asserts nothing. Carrying the verdict
+  turns the ADR into a parametrized test over all three values.
+- Agent caught its own overclaim mid-build: it wrote a docstring
+  saying a third assignment event "cannot be added without failing
+  mypy's exhaustiveness check", then noticed the `match` falls
+  through to the raise so mypy would say nothing. Rewrote it to the
+  true and weaker claim — closed by default. Small, but it is the
+  class of comment that gets believed for years.
+- Exhaustive table was green on arrival. Rather than bank it, the
+  agent mutated the implementation — smuggled `(ABANDONED, PING) ->
+  ACTIVE` into the table — confirmed the test failed, and reverted.
+  This is the right instinct for a test that costs nothing to write
+  and could easily assert nothing.
+- Honest accounting again: 7 of 10 cycles genuinely red and driving
+  code; 3 green on arrival, recorded as spec pins rather than
+  claimed as TDD.
+- Flagged for review rather than decided silently: `transitions`
+  imports `Verdict` from `verification`, which is the opposite
+  direction to the `geo.py` split, where zero internal callers was
+  the tell. Argument offered is that `Verdict` is verification's
+  output type rather than an incidental utility, and ADR-0004 is
+  *about* the coupling between a verdict and fulfilment.
+
+## 2026-09-03 — issue 03 reviewed by me
+
+Two open questions, both accepted. Recorded because one of them
+changed the code and the other should not be reopened by the next
+reader.
+
+- **Import direction, accepted.** `Verdict` is verification's output
+  type, not a shared utility, and ADR-0004 is precisely a policy
+  about fulfilment consuming that output — the arrow states the
+  truth. No cycle, no smell. A shared types module only if a third
+  consumer ever appears.
+- **The permissive `(ASSIGNED, COMPLETED)` cell, accepted with one
+  change.** The agent had the reasoning right and put it in the
+  issue's comments and in the test. Not enough: an unexplained
+  permissive cell in an otherwise-paranoid table reads as a bug to
+  any reviewer, and the explanation must live where the code is
+  read. Now a comment on the fall-through in `start_visit`. General
+  rule for the rest of this build — a deliberate hole in a defensive
+  structure is documented in the structure, not in the ticket that
+  created it.
+- Agent pushed back correctly on the instruction while carrying it
+  out: I asked for a comment on "that table row in transitions.py",
+  and there is no such row — `start_visit` is two guards and a
+  fall-through, so the permissive cell is the absence of a check.
+  It said so in one sentence, applied the intent, and noted where
+  the literal row actually lives.
