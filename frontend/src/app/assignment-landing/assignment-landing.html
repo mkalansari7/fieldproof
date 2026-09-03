@@ -1,0 +1,17 @@
+<main>
+  <h1>Assignment</h1>
+  <p>
+    Assignment <code>{{ assignmentId() }}</code>
+  </p>
+
+  <section aria-labelledby="probe-heading">
+    <h2 id="probe-heading">Location check (scaffolding)</h2>
+    <p>
+      Secure context: <strong>{{ secureContext ? 'yes' : 'no' }}</strong>
+    </p>
+    <p>
+      <button type="button" (click)="checkLocationPermission()">Check location permission</button>
+    </p>
+    <p role="status" aria-live="polite">{{ locationProbe() }}</p>
+  </section>
+</main>
