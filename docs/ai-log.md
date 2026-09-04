@@ -461,3 +461,24 @@ reader.
   (pre-paid test held the assignment lock by hand); closed with
   an endpoint-staged race test — without it, FULFILLED could
   overwrite EXPIRED.
+
+## 2026-09-04 — full participant flow field-tested on iPhone
+
+- Complete happy path on real hardware over the HTTPS dev server +
+  proxy: landing → consent (permission checked before Start is
+  offered) → active visit with Wake Lock and live ping counter →
+  End → report → done. Real GPS throughout.
+- First live verdict observed on the SSE stream: an 88s sofa visit
+  scored `suspicious` — the duration-first gate (the reversed
+  decision from 2026-09-02) firing on real data. Breakdown carried
+  on the COMPLETED delta per the 08 decision: 6 conclusive pings,
+  all outside (seeded coordinates ≠ my sofa), dwell 0.0, config v1.
+- FULFILLED followed immediately despite the suspicious verdict —
+  ADR-0004 observed on the wire: the verdict advises, fulfilment
+  ignores it.
+- Sweeper expired assignment #2 mid-test, unprompted, with no live
+  visit to protect it — decision A's guard correctly not applying.
+- Not exercised on-device this session: the 409-terminal screen
+  and the 15-minute abandonment path (proven earlier via the
+  smoke-test accident on 2026-09-03); permission-denied branch
+  verified in UI logic only.
