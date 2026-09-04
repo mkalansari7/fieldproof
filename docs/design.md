@@ -268,59 +268,78 @@ pass lets its assignment expire in the same pass.
 
 <!-- DECISION LOG — Mohammad -->
 
-1- Assignments ≠ visits
-The assignment is the job the business ask to do, the visit is one attempt the assigned person is trying to do.
+## Decision log, in my words
 
-Why?
-The attempt dies. Phone dies, left screen for more than 15 minutes or session gets abandoned. If the assignment and visit are one row and have one shared status. A failed attempt kills the paid job and to make it work again you need to revive it which means editing history (abandoned thing turns to be active again) this means the state machine is lying.
+1. Assignments ≠ visits
 
-With two rows (assignments and visits) a dead visit remains dead and honest, you just start a new visit to the same assignment. Plus the attempts count becomes information for the business, (five dead attempts then a clean attempt is a pattern worth seeing).
+   The assignment is the job the business asks to do, the visit is one attempt the assigned person is trying to do.
 
-Alternative rejected:
-One entity(assignments) has attempts_number column, this solves the retries issue but all attempts will share the same trail’s row, which means you can’t score attempt 2 separately from attempt 1. Also each attempt has its own facts(started_at, ended_at) if we use one row each attempt will overwrite the previous attempt timestamp.
+   Why?
 
-2- The verification model
-Two ideas merged into one:
-1- Pure replayable function: Don’t compute the score once and save just the number on the submission, instead keep raw pings and make the scoring a pure function (ping + target + config –> verdict), save the result and which config version produced it.
+   The attempt dies. Phone dies, left screen for more than 15 minutes or session gets abandoned. If the assignment and visit are one row and have one shared status. A failed attempt kills the paid job and to make it work again you need to revive it which means editing history (abandoned thing turns to be active again) this means the state machine is lying.
 
-Why: a saved number is frozen - you can’t fix the scoring bugs on old visits and you can’t answer “what is the score if I want it 150m away from the target instead of 100m?”. With the function + the kept trails you can rescore anything, anytime.
+   With two rows (assignments and visits) a dead visit remains dead and honest, you just start a new visit to the same assignment. Plus the attempts count becomes information for the business, (five dead attempts then a clean attempt is a pattern worth seeing).
 
-2- Accuracy as uncertainty, never trust: The obvious design weight the precise pings higher - but accuracy is a number the client types into a JSON, so the design trusts most whoever lies best(accuracy: 3m from a spoofer outscores an honest 400m inside a mall shopper).
-The inversion: accuracy is a circle of uncertainty:
-Circle fully inside the radius = inside.
-Circle fully outside the radius = outside.
-Circle straddling = count nothing.
-Lying about accuracy now buys nothing, an honest shopper’s fuzzy reading is treated as neutral instead of punished.
+   Alternative rejected:
 
-Alternative rejected:
-Score once and store (frozen, unfixable)
-Trust weight multiplier ( rewards only the liars)
+   One entity(assignments) has attempts_number column, this solves the retries issue but all attempts will share the same trail’s row, which means you can’t score attempt 2 separately from attempt 1. Also each attempt has its own facts(started_at, ended_at) if we use one row each attempt will overwrite the previous attempt timestamp.
 
-3- Fulfillment independent of verdict
-A completed visit fulfills its assignment no matter what the verdict says - the verdict set alongside it as advice.
+2. The verification model
 
-Why?
-The mystery shoppers are paid per fulfilled assignment. If fulfillment requires a verified verdict, the a confidence threshold we pick for example 0.80 silently decides a shopper gets paid or not, and it punishes the honest people gps fails (indoor, weak phones). Paying a low-confidence visit is a business judgment that should be made by a human with evidence in front them and not a formula’s job.
+   Two ideas merged into one:
 
-Alternative rejected:
-Verified gate fulfilled - it turns the scoring config into a payment gate.
+   1. Pure replayable function: Don’t compute the score once and save just the number on the submission, instead keep raw pings and make the scoring a pure function (ping + target + config –> verdict), save the result and which config version produced it.
 
-4- Split disclosure
-The business legitimate question is “was this person at my store?” - a raw gps trail answer more bigger one (where they walked before and after?), so the trail stays server-side (for scoring and audit). The business dashboard gets the verdict and breakdown numbers only, never a polyline. The participants get a consent screen before tracking and visible indicator during. Collecting a justified signal doesn’t license disclosing everything near it.
+      Why: a saved number is frozen - you can’t fix the scoring bugs on old visits and you can’t answer “what is the score if I want it 150m away from the target instead of 100m?”. With the function + the kept trails you can rescore anything, anytime.
 
-Alternative rejected:
-Map on the dashboard - Showing a map on the dashboard more visually appealing but it shows more data than the business actual needs, and that’s exactly what the brief mentioned as sensitive location data.
+   2. Accuracy as uncertainty, never trust: The obvious design weight the precise pings higher - but accuracy is a number the client types into a JSON, so the design trusts most whoever lies best(accuracy: 3m from a spoofer outscores an honest 400m inside a mall shopper).
 
-Score client-side and never upload - maximum privacy but verification computed by the untrusted clients is not a verification, and we cannot rescore it.
+      The inversion: accuracy is a circle of uncertainty:
 
-5- duration-first judgement order
-The verdict logic runs gates in order, and which gate runs first changes the product.
-Original spec draft said sufficiency first (let’s say a participant finishes a 5 minute job in 90 seconds the system under sufficiency first will see it as “not enough evidence, I refuse to judge” - Unverifiable. The issue is that this participant might just went for 90 seconds and did nothing which is a red flag and should count as Suspicious not Unverifiable. Under sufficiency-first, sprinting through scores better (unverifiable) than not showing up at all (suspicious) — so brevity becomes the cheapest way to launder a fake visit.
+      - Circle fully inside the radius = inside.
+      - Circle fully outside the radius = outside.
+      - Circle straddling = count nothing.
 
-The fix: duration first, it’s fair because duration comes from the server’s clock (ended_at, started_at) immune to every innocent thing that breaks GPS: pocketed phones, denied permission, indoor accuracy. Nothing innocent makes a 90-second session on a 5-minute job.
+      Lying about accuracy now buys nothing, an honest shopper’s fuzzy reading is treated as neutral instead of punished.
 
-Alternative rejected:
-Sufficiency first - Sounds good (don’t judge without the evidence) but it shields exactly the behavior the product designed to catch.
+   Alternative rejected:
+
+   - Score once and store (frozen, unfixable)
+   - Trust weight multiplier ( rewards only the liars)
+
+3. Fulfilment independent of verdict
+
+   A completed visit fulfills its assignment no matter what the verdict says - the verdict set alongside it as advice.
+
+   Why?
+
+   The mystery shoppers are paid per fulfilled assignment. If fulfilment requires a verified verdict, a confidence threshold we pick for example 0.80 silently decides a shopper gets paid or not, and it punishes the honest people gps fails (indoor, weak phones). Paying a low-confidence visit is a business judgment that should be made by a human with evidence in front of them and not a formula’s job.
+
+   Alternative rejected:
+
+   Verified gate fulfilled - it turns the scoring config into a payment gate.
+
+4. Split disclosure
+
+   The business legitimate question is “was this person at my store?” - a raw gps trail answers a bigger one (where they walked before and after?), so the trail stays server-side (for scoring and audit). The business dashboard gets the verdict and breakdown numbers only, never a polyline. The participants get a consent screen before tracking and visible indicator during. Collecting a justified signal doesn’t license disclosing everything near it.
+
+   Alternative rejected:
+
+   Map on the dashboard - Showing a map on the dashboard more visually appealing but it shows more data than the business actually needs, and that’s exactly what the brief mentioned as sensitive location data.
+
+   Score client-side and never upload - maximum privacy but verification computed by the untrusted clients is not a verification, and we cannot rescore it.
+
+5. duration-first judgement order
+
+   The verdict logic runs gates in order, and which gate runs first changes the product.
+
+   Original spec draft said sufficiency first (let’s say a participant finishes a 5 minute job in 90 seconds the system under sufficiency first will see it as “not enough evidence, I refuse to judge” - Unverifiable. The issue is that this participant might just have gone for 90 seconds and did nothing which is a red flag and should count as Suspicious not Unverifiable. Under sufficiency-first, sprinting through scores better (unverifiable) than not showing up at all (suspicious) — so brevity becomes the cheapest way to launder a fake visit.
+
+   The fix: duration first, it’s fair because duration comes from the server’s clock (ended_at, started_at) immune to every innocent thing that breaks GPS: pocketed phones, denied permission, indoor accuracy. Nothing innocent makes a 90-second session on a 5-minute job.
+
+   Alternative rejected:
+
+   Sufficiency first - Sounds good (don’t judge without the evidence) but it shields exactly the behavior the product designed to catch.
 
 ## 4. Measured: iOS Safari suspension (iPhone, Safari, 2026-09-01)
 
@@ -330,16 +349,17 @@ Test: page logging a timestamp every 15s, served locally
 - Screen locked ~2.5 min → single gap of 147s (no ticks during lock)
 - Screen locked ~5 min → single gap of 297.8s
 - Backgrounded to another app ~2 min → single gap of 116.4s
-  In all cases suspension was total and immediate; ticks resumed
-  instantly on return. Gap length ≈ time away, unbounded.
-  Consequence: ping silence cannot distinguish "pocketed phone"
-  from "left the site" — timeout set to 15 min, and ping silence
-  on its own feeds UNVERIFIABLE, never SUSPICIOUS. (A visit shorter
-  than min_duration_s is SUSPICIOUS on server-clock evidence alone,
-  per spec.md §3; suspension never shortens a visit, so the two
-  never collide.) Wake Lock + explicit "keep page open" guidance is
-  the primary mitigation.
-  Caveat: one device, one browser; Android/Chrome not measured.
+
+In all cases suspension was total and immediate; ticks resumed
+instantly on return. Gap length ≈ time away, unbounded.
+Consequence: ping silence cannot distinguish "pocketed phone"
+from "left the site" — timeout set to 15 min, and ping silence
+on its own feeds UNVERIFIABLE, never SUSPICIOUS. (A visit shorter
+than min_duration_s is SUSPICIOUS on server-clock evidence alone,
+per spec.md §3; suspension never shortens a visit, so the two
+never collide.) Wake Lock + explicit "keep page open" guidance is
+the primary mitigation.
+Caveat: one device, one browser; Android/Chrome not measured.
 
 What the measurement set, concretely: `ABANDON_AFTER_S` is 900 rather than a
 round number chosen for feel, because a 5-minute lock produced a 5-minute gap
@@ -440,28 +460,33 @@ consolidated list.
   carries `--timeout-graceful-shutdown`.
 
 Also out of scope and stated rather than hidden (`spec.md` §10): no
-authentication, participant and business are seeded; no migration tool, the
-schema is built from the models; the live in-flight dashboard view (ticking
-"last seen" and a map) was scoped in and cut for time; the internal audit map
-that ADR-0005 describes as the one place a trail may be drawn is not started;
+authentication, participant and business are seeded; the live in-flight
+dashboard view (ticking "last seen" and a map) was scoped in and cut for time;
 and queued ingest and the partitioned ping table are named in section 5, not
-built.
+built. Two more are recorded elsewhere, not in §10: there is no migration tool,
+the schema is built from the models, and that decision is recorded on
+`database.py`; and the internal audit map that ADR-0005 describes as the one
+place a trail may be drawn is not started.
 
 <!-- PUSHBACK — Mohammad -->
 
-1- gps only verification can’t really stop fraud and I measured why. The browser location disappears when the participant pocket the phone or uses a different app. I tested it out, IOS suspends javascript entirely on lock or when leaving safari. Meanwhile the cheater can produce a perfect trail from the couch. So honest users produce ragged evidence and cheaters produce clean evidence. That’s why my design use Unverifiable as a verdict.
+## Pushback on the brief
 
-2- what I would build instead. Make honest presence cheap to prove: a qr code in the counter to scan mid visit, or a timed photo challenge (“photo of the door within 90 seconds”). GPS stays as one signal among several.
+1. gps only verification can’t really stop fraud and I measured why. The browser location disappears when the participant pocket the phone or uses a different app. I tested it out, IOS suspends javascript entirely on lock or when leaving safari. Meanwhile the cheater can produce a perfect trail from the couch. So honest users produce ragged evidence and cheaters produce clean evidence. That’s why my design uses Unverifiable as a verdict.
 
-3- The brief assumes participants are assigned tasks. A real mystery-shopping product would probably work more like a marketplace, where participants browse and claim available tasks.
-I kept pre-assignment deliberately. Claiming adds extra states, race conditions, and complexity without adding much value to a 5-day build.
-The important part: the Assignment / Visit split works either way, so switching to a marketplace later would not require changing the core model.
+2. what I would build instead. Make honest presence cheap to prove: a qr code in the counter to scan mid visit, or a timed photo challenge (“photo of the door within 90 seconds”). GPS stays as one signal among several.
 
-4- I deliberately kept completion separate from the verdict. A completed visit fulfils the job; the verdict is only advice.
+3. The brief assumes participants are assigned tasks. A real mystery-shopping product would probably work more like a marketplace, where participants browse and claim available tasks.
 
-Why: a scoring threshold should not decide whether a worker gets paid. Low confidence can come from bad GPS, not bad work.
+   I kept pre-assignment deliberately. Claiming adds extra states, race conditions, and complexity without adding much value to a 5-day build.
 
-Payment should be a business decision, not a scoring rule.
+   The important part: the Assignment / Visit split works either way, so switching to a marketplace later would not require changing the core model.
+
+4. I deliberately kept completion separate from the verdict. A completed visit fulfils the job; the verdict is only advice.
+
+   Why: a scoring threshold should not decide whether a worker gets paid. Low confidence can come from bad GPS, not bad work.
+
+   Payment should be a business decision, not a scoring rule.
 
 ## 7. Tests
 
