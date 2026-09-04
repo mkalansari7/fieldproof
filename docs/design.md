@@ -109,6 +109,9 @@ OUTSIDE       if distance - accuracy > radius
 INCONCLUSIVE  otherwise
 ```
 
+The rule was hand-worked on paper before the issue 02 design was accepted:
+`docs/experiments/interval-rule-notebook.pdf`.
+
 A ping whose interval straddles the radius counts for neither side. There is no
 accuracy cutoff: `accuracy: 800` against a 100 m radius is already inconclusive
 by arithmetic, and `accuracy: 3` earns nothing a real 3 m fix would not.

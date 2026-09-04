@@ -188,6 +188,9 @@ the _boundary_, and the boundary was the thing we had argued about first.
   now carries its rationale in code — we do not split a crossing interval because
   we never observe the crossing, and an invented number would sit in a field the
   business reads as measured.
+- Hand-worked verification of the uncertainty-interval rule (the `d + a` /
+  `d - a` cases), done on paper before accepting the issue 02 design:
+  `docs/experiments/interval-rule-notebook.pdf`.
 
 ## 2026-09-03 — build, issue 03 (/tdd)
 
