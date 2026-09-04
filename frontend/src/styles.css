@@ -123,6 +123,54 @@ th[scope='rowgroup'] {
   background: rgb(127 127 127 / 0.1);
 }
 
+/* The assignment header row: a heading, a state badge, then the facts. */
+th.assignment h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+th.assignment .participant {
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+th.assignment .participant::before {
+  content: '· ';
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+dl.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.5rem;
+  margin: 0;
+}
+
+dl.facts div {
+  display: flex;
+  gap: 0.4rem;
+}
+
+dl.facts dt,
+dl.facts dd {
+  margin: 0;
+}
+
+dl.facts dt::after {
+  content: ':';
+}
+
 .error {
   color: #b3261e;
   font-weight: 600;
