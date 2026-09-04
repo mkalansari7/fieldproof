@@ -445,3 +445,19 @@ reader.
   the assignment lock by hand and so proves the sweep's side only.
   Closed by staging the race through the endpoint; without the
   lock it is a lost update, FULFILLED written over EXPIRED.
+
+## 2026-09-04 — issue 07 scaffolding + secure-origin proof
+
+- Verified on iPhone at 1:45am: Angular dev server with
+  self-signed HTTPS gives Secure context: yes and real
+  geolocation (granted, ±20m) after accepting the cert warning.
+  The iOS geolocation wall from the smoke test is closed — no
+  mkcert needed.
+- Agent pinned Angular 21 after the newest CLI refused Node
+  20.19; recorded in README. Mixed content flagged as the next
+  wall; decision made: proxy /api through the dev server.
+- Issue 08's mutation pass caught a fourth real defect class:
+  report handler's lock scoped to visit alone survived sabotage
+  (pre-paid test held the assignment lock by hand); closed with
+  an endpoint-staged race test — without it, FULFILLED could
+  overwrite EXPIRED.
