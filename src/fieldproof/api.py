@@ -49,7 +49,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from fieldproof.config import BACKFILL_GRACE_S, SCORING_CONFIG
 from fieldproof.dashboard import DashboardSnapshot, encode, snapshot, stream
 from fieldproof.database import create_engine, session_factory
-from fieldproof.events import EventBus, transition_assignment, transition_visit, visit_started
+from fieldproof.events import (
+    EventBus,
+    transition_assignment,
+    transition_visit,
+    visit_started,
+)
 from fieldproof.schema import (
     ONE_NON_TERMINAL_VISIT_INDEX,
     ONE_REPORT_PER_VISIT_INDEX,
@@ -101,7 +106,9 @@ class Reason(StrEnum):
     PING_TOO_OLD = "ping_too_old"
 
 
-def _error(status: HTTPStatus, reason: Reason, message: str, **extra: Any) -> HTTPException:
+def _error(
+    status: HTTPStatus, reason: Reason, message: str, **extra: Any
+) -> HTTPException:
     """An error whose body is `{reason, message, ...}`. Returned to be raised."""
     return HTTPException(
         status_code=status, detail={"reason": reason.value, "message": message, **extra}
@@ -293,11 +300,15 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
     app.add_exception_handler(IllegalTransitionError, _illegal_transition)
 
     @app.get("/api/assignments/{assignment_id}", response_model=AssignmentDetails)
-    async def assignment_details(assignment_id: UUID, session: Session) -> AssignmentDetails:
+    async def assignment_details(
+        assignment_id: UUID, session: Session
+    ) -> AssignmentDetails:
         """The landing page's read (spec.md §6). 404 if there is no such assignment."""
         assignment = await session.get(Assignment, assignment_id)
         if assignment is None:
-            raise _error(HTTPStatus.NOT_FOUND, Reason.NOT_FOUND, f"no assignment {assignment_id}")
+            raise _error(
+                HTTPStatus.NOT_FOUND, Reason.NOT_FOUND, f"no assignment {assignment_id}"
+            )
         return AssignmentDetails.model_validate(assignment)
 
     @app.post(
@@ -305,7 +316,9 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         status_code=HTTPStatus.CREATED,
         response_model=VisitStarted,
     )
-    async def open_visit(assignment_id: UUID, session: Session, bus: Bus) -> VisitStarted:
+    async def open_visit(
+        assignment_id: UUID, session: Session, bus: Bus
+    ) -> VisitStarted:
         """Start a visit against an assignment (spec.md §5, §6). 409 if it may not.
 
         Publishes on the same bus as the sweeper, after the commit — a new visit
@@ -323,7 +336,9 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         started_at = received_now()
         assignment = await session.get(Assignment, assignment_id)
         if assignment is None:
-            raise _error(HTTPStatus.NOT_FOUND, Reason.NOT_FOUND, f"no assignment {assignment_id}")
+            raise _error(
+                HTTPStatus.NOT_FOUND, Reason.NOT_FOUND, f"no assignment {assignment_id}"
+            )
 
         # The latest visit, by the machine's definition of latest. Ties are
         # possible in principle and harmless: `start_visit` only distinguishes
@@ -507,11 +522,15 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
 
         events = transition_visit(visit, VisitEvent.END, at=ended_at)
         visit.ended_at = ended_at
-        visit.report_deadline_at = ended_at + timedelta(seconds=assignment.report_deadline_s)
+        visit.report_deadline_at = ended_at + timedelta(
+            seconds=assignment.report_deadline_s
+        )
         await session.commit()
         bus.publish(events)
         return VisitEnded(
-            visit_id=visit.id, ended_at=ended_at, report_deadline_at=visit.report_deadline_at
+            visit_id=visit.id,
+            ended_at=ended_at,
+            report_deadline_at=visit.report_deadline_at,
         )
 
     @app.post("/api/visits/{visit_id}/report", response_model=ReportAccepted)
@@ -575,13 +594,17 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         if visit.ended_at is None:
             # Unreachable through the machine, and a 500 is the honest answer
             # if it is reached: the sealer is broken, not the participant.
-            raise RuntimeError(f"visit {visit.id} is {visit.state.value} with no ended_at")
+            raise RuntimeError(
+                f"visit {visit.id} is {visit.state.value} with no ended_at"
+            )
 
         trail = (
             (
                 await session.execute(
                     select(Ping)
-                    .where(Ping.visit_id == visit.id, Ping.received_at <= visit.ended_at)
+                    .where(
+                        Ping.visit_id == visit.id, Ping.received_at <= visit.ended_at
+                    )
                     .order_by(Ping.received_at)
                 )
             )
@@ -612,14 +635,20 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
         )
         events.append(
             transition_assignment(
-                assignment, VisitCompleted(verdict=verification.verdict), at=submitted_at
+                assignment,
+                VisitCompleted(verdict=verification.verdict),
+                at=submitted_at,
             )
         )
-        session.add(Report(visit_id=visit.id, body=report.body, submitted_at=submitted_at))
+        session.add(
+            Report(visit_id=visit.id, body=report.body, submitted_at=submitted_at)
+        )
         # `VerdictRecord` is the persisted form of `Verification`, column for
         # field (`schema`); the spread is that claim, checked at insert.
         session.add(
-            VerdictRecord(visit_id=visit.id, computed_at=submitted_at, **asdict(verification))
+            VerdictRecord(
+                visit_id=visit.id, computed_at=submitted_at, **asdict(verification)
+            )
         )
         try:
             await session.commit()
@@ -709,7 +738,7 @@ def _violated_index(exc: IntegrityError) -> str | None:
 app = create_app()
 """The application uvicorn serves. Owns its own engine.
 
-    uvicorn fieldproof.api:app --timeout-graceful-shutdown 5
+    uvicorn fieldproof.api:app --timeout-graceful-shutdown 2
 
 The flag is not optional once a dashboard is open: without it, uvicorn's
 shutdown waits for the SSE stream to end, which is when the tab closes

@@ -160,24 +160,24 @@ trace.
 **Worked example.** Terms: `radius_m` 100, `min_duration_s` 300. Config v1.
 A 600-second visit with 34 pings at the client's 15-second cadence:
 
-| Offset from start | Pings | distance | accuracy | Class | Why |
-| --- | --- | --- | --- | --- | --- |
-| 0, 15, 30, 45 s | 4 | 150 m | 20 m | OUTSIDE | 150 − 20 = 130 > 100 (walking in from the car park) |
-| 60 … 300 s | 17 | 30 m | 20 m | INSIDE | 30 + 20 = 50 < 100 |
-| 300 → 420 s | none | | | | phone locked in a pocket for two minutes |
-| 420 … 540 s | 9 | 30 m | 20 m | INSIDE | as above |
-| 555, 570, 585, 600 s | 4 | 40 m | 90 m | INCONCLUSIVE | 40 + 90 = 130 is not < 100, and 40 − 90 is not > 100 (stepped indoors, accuracy degraded) |
+| Offset from start    | Pings | distance | accuracy | Class        | Why                                                                                       |
+| -------------------- | ----- | -------- | -------- | ------------ | ----------------------------------------------------------------------------------------- |
+| 0, 15, 30, 45 s      | 4     | 150 m    | 20 m     | OUTSIDE      | 150 − 20 = 130 > 100 (walking in from the car park)                                       |
+| 60 … 300 s           | 17    | 30 m     | 20 m     | INSIDE       | 30 + 20 = 50 < 100                                                                        |
+| 300 → 420 s          | none  |          |          |              | phone locked in a pocket for two minutes                                                  |
+| 420 … 540 s          | 9     | 30 m     | 20 m     | INSIDE       | as above                                                                                  |
+| 555, 570, 585, 600 s | 4     | 40 m     | 90 m     | INCONCLUSIVE | 40 + 90 = 130 is not < 100, and 40 − 90 is not > 100 (stepped indoors, accuracy degraded) |
 
 Attribution over the 30 conclusive pings:
 
-| Pairs | Seconds | Goes to |
-| --- | --- | --- |
-| 0→15, 15→30, 30→45 (both OUTSIDE) | 45 | outside |
-| 45→60 (OUTSIDE then INSIDE) | 15 | unattributed: the crossing was not observed |
-| 60→300, sixteen 15 s gaps (both INSIDE) | 240 | inside |
-| 300→420 (120 s > 60 s limit) | 120 | unattributed: the pocket |
-| 420→540, eight 15 s gaps (both INSIDE) | 120 | inside |
-| 540→(555…600 are inconclusive, skipped; no later conclusive ping) | 60 | unattributed |
+| Pairs                                                             | Seconds | Goes to                                     |
+| ----------------------------------------------------------------- | ------- | ------------------------------------------- |
+| 0→15, 15→30, 30→45 (both OUTSIDE)                                 | 45      | outside                                     |
+| 45→60 (OUTSIDE then INSIDE)                                       | 15      | unattributed: the crossing was not observed |
+| 60→300, sixteen 15 s gaps (both INSIDE)                           | 240     | inside                                      |
+| 300→420 (120 s > 60 s limit)                                      | 120     | unattributed: the pocket                    |
+| 420→540, eight 15 s gaps (both INSIDE)                            | 120     | inside                                      |
+| 540→(555…600 are inconclusive, skipped; no later conclusive ping) | 60      | unattributed                                |
 
 Totals: `inside_s` 360, `outside_s` 45, `attributed_total_s` 405,
 `unattributed_s` 195 (600 − 405), `dwell_ratio` 360 / 405 = 0.889,
@@ -242,7 +242,7 @@ by design: the participant has left the site and cannot re-run a visit to attach
 prose, which is why the report window defaults to 24 hours and is a fact of the
 task, set per assignment.
 
-**Assignment.** The task a business issued. `deadline_at` is a *start-by* time.
+**Assignment.** The task a business issued. `deadline_at` is a _start-by_ time.
 
 ```mermaid
 stateDiagram-v2
@@ -267,6 +267,60 @@ sweeps run abandon, unreported, expire in that order, so a visit abandoned in a
 pass lets its assignment expire in the same pass.
 
 <!-- DECISION LOG — Mohammad -->
+
+1- Assignments ≠ visits
+The assignment is the job the business ask to do, the visit is one attempt the assigned person is trying to do.
+
+Why?
+The attempt dies. Phone dies, left screen for more than 15 minutes or session gets abandoned. If the assignment and visit are one row and have one shared status. A failed attempt kills the paid job and to make it work again you need to revive it which means editing history (abandoned thing turns to be active again) this means the state machine is lying.
+
+With two rows (assignments and visits) a dead visit remains dead and honest, you just start a new visit to the same assignment. Plus the attempts count becomes information for the business, (five dead attempts then a clean attempt is a pattern worth seeing).
+
+Alternative rejected:
+One entity(assignments) has attempts_number column, this solves the retries issue but all attempts will share the same trail’s row, which means you can’t score attempt 2 separately from attempt 1. Also each attempt has its own facts(started_at, ended_at) if we use one row each attempt will overwrite the previous attempt timestamp.
+
+2- The verification model
+Two ideas merged into one:
+1- Pure replayable function: Don’t compute the score once and save just the number on the submission, instead keep raw pings and make the scoring a pure function (ping + target + config –> verdict), save the result and which config version produced it.
+
+Why: a saved number is frozen - you can’t fix the scoring bugs on old visits and you can’t answer “what is the score if I want it 150m away from the target instead of 100m?”. With the function + the kept trails you can rescore anything, anytime.
+
+2- Accuracy as uncertainty, never trust: The obvious design weight the precise pings higher - but accuracy is a number the client types into a JSON, so the design trusts most whoever lies best(accuracy: 3m from a spoofer outscores an honest 400m inside a mall shopper).
+The inversion: accuracy is a circle of uncertainty:
+Circle fully inside the radius = inside.
+Circle fully outside the radius = outside.
+Circle straddling = count nothing.
+Lying about accuracy now buys nothing, an honest shopper’s fuzzy reading is treated as neutral instead of punished.
+
+Alternative rejected:
+Score once and store (frozen, unfixable)
+Trust weight multiplier ( rewards only the liars)
+
+3- Fulfillment independent of verdict
+A completed visit fulfills its assignment no matter what the verdict says - the verdict set alongside it as advice.
+
+Why?
+The mystery shoppers are paid per fulfilled assignment. If fulfillment requires a verified verdict, the a confidence threshold we pick for example 0.80 silently decides a shopper gets paid or not, and it punishes the honest people gps fails (indoor, weak phones). Paying a low-confidence visit is a business judgment that should be made by a human with evidence in front them and not a formula’s job.
+
+Alternative rejected:
+Verified gate fulfilled - it turns the scoring config into a payment gate.
+
+4- Split disclosure
+The business legitimate question is “was this person at my store?” - a raw gps trail answer more bigger one (where they walked before and after?), so the trail stays server-side (for scoring and audit). The business dashboard gets the verdict and breakdown numbers only, never a polyline. The participants get a consent screen before tracking and visible indicator during. Collecting a justified signal doesn’t license disclosing everything near it.
+
+Alternative rejected:
+Map on the dashboard - Showing a map on the dashboard more visually appealing but it shows more data than the business actual needs, and that’s exactly what the brief mentioned as sensitive location data.
+
+Score client-side and never upload - maximum privacy but verification computed by the untrusted clients is not a verification, and we cannot rescore it.
+
+5- duration-first judgement order
+The verdict logic runs gates in order, and which gate runs first changes the product.
+Original spec draft said sufficiency first (let’s say a participant finishes a 5 minute job in 90 seconds the system under sufficiency first will see it as “not enough evidence, I refuse to judge” - Unverifiable. The issue is that this participant might just went for 90 seconds and did nothing which is a red flag and should count as Suspicious not Unverifiable. Under sufficiency-first, sprinting through scores better (unverifiable) than not showing up at all (suspicious) — so brevity becomes the cheapest way to launder a fake visit.
+
+The fix: duration first, it’s fair because duration comes from the server’s clock (ended_at, started_at) immune to every innocent thing that breaks GPS: pocketed phones, denied permission, indoor accuracy. Nothing innocent makes a 90-second session on a 5-minute job.
+
+Alternative rejected:
+Sufficiency first - Sounds good (don’t judge without the evidence) but it shields exactly the behavior the product designed to catch.
 
 ## 4. Measured: iOS Safari suspension (iPhone, Safari, 2026-09-01)
 
@@ -395,25 +449,19 @@ built.
 
 <!-- PUSHBACK — Mohammad -->
 
-Notes from the design session toward this section, unedited:
+1- gps only verification can’t really stop fraud and I measured why. The browser location disappears when the participant pocket the phone or uses a different app. I tested it out, IOS suspends javascript entirely on lock or when leaving safari. Meanwhile the cheater can produce a perfect trail from the couch. So honest users produce ragged evidence and cheaters produce clean evidence. That’s why my design use Unverifiable as a verdict.
 
-- My measurement is the core argument: iOS suspends JS entirely
-  when pocketed/backgrounded — the primary signal disappears when
-  the user does the most natural thing with a phone. GPS-only
-  verification is therefore a laziness filter, not fraud
-  prevention (see Measured section). Wake Lock + "keep page open"
-  aren't polish; the product depends on them. v2: signals that are
-  cheap for honest presence (QR on site / timed photo), not
-  costlier fraud detection.
-- The brief's first line — "a participant is assigned a task" —
-  presupposes the assignment model. A real mystery-shopping product
-  is more likely a marketplace: tasks posted openly, participants
-  claim them. Kept pre-assigned in the slice deliberately: claiming
-  adds an OPEN → CLAIMED state, claim-expiry sweeps, and
-  concurrent-claim races — a day of work that demonstrates no new
-  thinking. The Assignment/Visit split survives the change
-  unmodified: claiming alters how an assignment acquires its
-  participant, not what a visit is.
+2- what I would build instead. Make honest presence cheap to prove: a qr code in the counter to scan mid visit, or a timed photo challenge (“photo of the door within 90 seconds”). GPS stays as one signal among several.
+
+3- The brief assumes participants are assigned tasks. A real mystery-shopping product would probably work more like a marketplace, where participants browse and claim available tasks.
+I kept pre-assignment deliberately. Claiming adds extra states, race conditions, and complexity without adding much value to a 5-day build.
+The important part: the Assignment / Visit split works either way, so switching to a marketplace later would not require changing the core model.
+
+4- I deliberately kept completion separate from the verdict. A completed visit fulfils the job; the verdict is only advice.
+
+Why: a scoring threshold should not decide whether a worker gets paid. Low confidence can come from bad GPS, not bad work.
+
+Payment should be a business decision, not a scoring rule.
 
 ## 7. Tests
 
@@ -491,14 +539,14 @@ on arrival it was not banked. It was mutation-tested: a deliberate defect
 smuggled into the shipped code, the suite run, the failure confirmed, the
 defect reverted. The mutation campaigns by issue:
 
-| Issue | Mutations | Caught first pass | What the survivors were |
-| --- | --- | --- | --- |
-| 01 schema and seed | 11 (+2 after the report-window reversal) | all | none |
-| 03 state machine | 1 (a smuggled `ABANDONED → ACTIVE` row) | 1 | none |
-| 04 ping ingest | 13 | 12 | a write before the grace check, held by the rollback rather than the assertion; documented on the test |
-| 05 sweeper and bus | 22 | 16 | six closed, two of them real design defects: a self-loop guard no caller could observe (fixed by returning a list), and a shutdown that could hang forever (bounded) |
-| 06 dashboard stream | 1 (subscribe and snapshot swapped) | 1 | none |
-| 08 report trigger | 4 | 3 | the report handler's lock scoped to the visit alone; closed by staging the expiry race through the endpoint, where the survivor becomes a lost update |
+| Issue               | Mutations                                | Caught first pass | What the survivors were                                                                                                                                              |
+| ------------------- | ---------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 01 schema and seed  | 11 (+2 after the report-window reversal) | all               | none                                                                                                                                                                 |
+| 03 state machine    | 1 (a smuggled `ABANDONED → ACTIVE` row)  | 1                 | none                                                                                                                                                                 |
+| 04 ping ingest      | 13                                       | 12                | a write before the grace check, held by the rollback rather than the assertion; documented on the test                                                               |
+| 05 sweeper and bus  | 22                                       | 16                | six closed, two of them real design defects: a self-loop guard no caller could observe (fixed by returning a list), and a shutdown that could hang forever (bounded) |
+| 06 dashboard stream | 1 (subscribe and snapshot swapped)       | 1                 | none                                                                                                                                                                 |
+| 08 report trigger   | 4                                        | 3                 | the report handler's lock scoped to the visit alone; closed by staging the expiry race through the endpoint, where the survivor becomes a lost update                |
 
 Two of the misses were not weak tests but designs that made the rule
 unobservable, which is the finding mutation testing exists to produce.
@@ -506,16 +554,16 @@ unobservable, which is the finding mutation testing exists to produce.
 **Current counts**, four gates green on 2026-09-04 (`ruff check`,
 `ruff format`, `mypy --strict`, `pytest`):
 
-| File | Tests | Needs Postgres |
-| --- | --- | --- |
-| `test_transitions.py` | 79 | no |
-| `test_api.py` | 57 | yes |
-| `test_sweeper.py` | 49 | yes |
-| `test_verification.py` | 30 | no |
-| `test_schema.py` | 26 | yes |
-| `test_dashboard.py` | 12 | yes |
-| `test_seed.py` | 9 | yes |
-| `test_geo.py` | 7 | no |
-| **Total** | **269** | |
+| File                   | Tests   | Needs Postgres |
+| ---------------------- | ------- | -------------- |
+| `test_transitions.py`  | 79      | no             |
+| `test_api.py`          | 57      | yes            |
+| `test_sweeper.py`      | 49      | yes            |
+| `test_verification.py` | 30      | no             |
+| `test_schema.py`       | 26      | yes            |
+| `test_dashboard.py`    | 12      | yes            |
+| `test_seed.py`         | 9       | yes            |
+| `test_geo.py`          | 7       | no             |
+| **Total**              | **269** |                |
 
 The frontend has no test suite, per the rule above.
