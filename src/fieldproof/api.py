@@ -62,6 +62,7 @@ from fieldproof.schema import (
 )
 from fieldproof.sweeper import start_sweeper, stop_sweeper
 from fieldproof.transitions import (
+    AssignmentState,
     IllegalTransitionError,
     VisitCompleted,
     VisitEvent,
@@ -105,6 +106,27 @@ def _error(status: HTTPStatus, reason: Reason, message: str, **extra: Any) -> HT
     return HTTPException(
         status_code=status, detail={"reason": reason.value, "message": message, **extra}
     )
+
+
+class AssignmentDetails(BaseModel):
+    """200. What the participant's landing page shows before anything tracks.
+
+    The task's own terms and nothing about judgement: no verdicts, no visits, no
+    target coordinates. The participant already knows where they are going, and
+    the page's job is consent (spec.md §8), not navigation. `state` is here so
+    the page can say "this assignment has closed" instead of offering a Start
+    button that would only ever answer 409.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    business_name: str
+    participant_name: str
+    state: AssignmentState
+    deadline_at: datetime
+    min_duration_s: int
+    report_deadline_s: int
 
 
 class PingRequest(BaseModel):
@@ -269,6 +291,14 @@ def create_app(*, engine: AsyncEngine | None = None) -> FastAPI:
     if engine is not None:
         app.state.session_factory = session_factory(engine)
     app.add_exception_handler(IllegalTransitionError, _illegal_transition)
+
+    @app.get("/api/assignments/{assignment_id}", response_model=AssignmentDetails)
+    async def assignment_details(assignment_id: UUID, session: Session) -> AssignmentDetails:
+        """The landing page's read (spec.md §6). 404 if there is no such assignment."""
+        assignment = await session.get(Assignment, assignment_id)
+        if assignment is None:
+            raise _error(HTTPStatus.NOT_FOUND, Reason.NOT_FOUND, f"no assignment {assignment_id}")
+        return AssignmentDetails.model_validate(assignment)
 
     @app.post(
         "/api/assignments/{assignment_id}/visits",

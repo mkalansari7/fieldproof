@@ -1,0 +1,195 @@
+<main>
+  @switch (screen()) {
+    @case ('loading') {
+      <p role="status">Loading your assignment…</p>
+    }
+
+    @case ('unavailable') {
+      <h1>Assignment unavailable</h1>
+      <p role="alert" class="error">{{ loadError() }}</p>
+    }
+
+    @case ('landing') {
+      @if (assignment(); as a) {
+        <h1>Visit for {{ a.business_name }}</h1>
+        <p>Hello {{ a.participant_name }}.</p>
+        <dl>
+          <dt>Start by</dt>
+          <dd>{{ a.deadline_at | date: 'medium' }}</dd>
+          <dt>Stay for at least</dt>
+          <dd>{{ minDurationMin() }} minutes</dd>
+        </dl>
+        @if (a.state === 'ASSIGNED') {
+          <p>
+            When you are at the location and ready, continue. The next screen explains what this
+            page collects before anything starts.
+          </p>
+          <p><button type="button" (click)="toConsent()">Continue</button></p>
+        } @else {
+          <p role="status">
+            This assignment is {{ a.state.toLowerCase() }} and no longer accepts visits.
+          </p>
+        }
+      }
+    }
+
+    @case ('consent') {
+      <h1>Before you start</h1>
+      <section aria-labelledby="collected">
+        <h2 id="collected">What this page collects</h2>
+        <ul>
+          <li>
+            Your location — coordinates and their accuracy — about every
+            {{ pingIntervalS }} seconds while the visit is active.
+          </li>
+          <li>
+            Each reading is sent to fieldproof and stored with the time it arrived, so
+            {{ assignment()?.business_name }} can confirm the visit happened at the location and for
+            how long.
+          </li>
+          <li>
+            Collection stops when you tap <strong>End visit</strong>. Nothing is collected before
+            you tap Start, and nothing after End.
+          </li>
+        </ul>
+      </section>
+      <section aria-labelledby="stay-open">
+        <h2 id="stay-open">Keep this page open</h2>
+        <p>
+          Locations are only sent while this page is open and on screen. We will ask your phone to
+          keep the screen awake for the visit; not every browser allows it, so keep the phone
+          unlocked. If the phone stops sending locations for
+          {{ abandonAfterMin }} minutes, the visit is closed automatically and you would have to
+          start a new one.
+        </p>
+      </section>
+      <section aria-labelledby="location-access">
+        <h2 id="location-access">Location access</h2>
+        @if (locationCheck(); as check) {
+          @switch (check.kind) {
+            @case ('unchecked') {
+              <p>Check that this page can read your location before you start.</p>
+              <p><button type="button" (click)="checkLocation()">Check location access</button></p>
+            }
+            @case ('checking') {
+              <p role="status">Asking for your location…</p>
+            }
+            @case ('granted') {
+              <p role="status">
+                Location works. Your phone reports it to within
+                {{ check.accuracy_m | number: '1.0-0' }} m.
+              </p>
+              <p>
+                <button type="button" (click)="start()" [disabled]="busy()">Start visit</button>
+              </p>
+            }
+            @case ('denied') {
+              <p role="alert" class="error">
+                Location access was denied. You can still start the visit, but with no locations
+                there is nothing to confirm it by: it will be recorded as
+                <strong>unverifiable</strong>. To fix this, allow location for this site in your
+                browser settings and check again.
+              </p>
+              <p>
+                <button type="button" (click)="checkLocation()">Check again</button>
+                <button type="button" (click)="start()" [disabled]="busy()">
+                  Start anyway (unverifiable)
+                </button>
+              </p>
+            }
+            @case ('failed') {
+              <p role="alert" class="error">
+                Your location could not be read: {{ check.message }}. You can start, but if readings
+                keep failing the visit cannot be verified.
+              </p>
+              <p>
+                <button type="button" (click)="checkLocation()">Check again</button>
+                <button type="button" (click)="start()" [disabled]="busy()">Start anyway</button>
+              </p>
+            }
+          }
+        }
+        @if (startError()) {
+          <p role="alert" class="error">Could not start the visit: {{ startError() }}</p>
+        }
+      </section>
+    }
+
+    @case ('active') {
+      <h1>Visit in progress</h1>
+      <p class="tracking" role="status" aria-live="polite">
+        <span class="dot" aria-hidden="true"></span>
+        Tracking active. {{ pingsSent() }} location{{ pingsSent() === 1 ? '' : 's' }} sent
+        @if (lastPingAt(); as at) {
+          , last at {{ at | date: 'mediumTime' }}
+        }
+        .
+      </p>
+      <p>
+        Keep this page open and on screen.
+        @if (wakeLockHeld()) {
+          The screen is being kept awake.
+        } @else {
+          Your browser did not let us keep the screen awake, so do not let the phone lock.
+        }
+      </p>
+      @if (locationError()) {
+        <p role="alert" class="error">{{ locationError() }}</p>
+      }
+      @if (pingError()) {
+        <p role="alert" class="error">{{ pingError() }}</p>
+      }
+      @if (endError()) {
+        <p role="alert" class="error">Could not end the visit: {{ endError() }}</p>
+      }
+      <p>
+        <button type="button" (click)="end()" [disabled]="busy()">End visit</button>
+      </p>
+    }
+
+    @case ('closed') {
+      <h1>Visit closed</h1>
+      <p role="alert">
+        This visit was closed after 15 minutes without a location update. You can start a new visit.
+      </p>
+      <p><button type="button" (click)="startAgain()">Start a new visit</button></p>
+    }
+
+    @case ('report') {
+      <h1>Your report</h1>
+      <p>
+        The visit has ended and location tracking has stopped. Write up what you found by
+        <strong>{{ reportDeadlineAt() | date: 'medium' }}</strong
+        >; after that the visit is closed without a report.
+      </p>
+      <p>
+        <label for="report-body">Report</label>
+        <textarea
+          id="report-body"
+          rows="8"
+          #body
+          [value]="reportBody()"
+          (input)="reportBody.set(body.value)"
+        ></textarea>
+      </p>
+      @if (reportError()) {
+        <p role="alert" class="error">{{ reportError() }}</p>
+      }
+      <p>
+        <button
+          type="button"
+          (click)="submitReport()"
+          [disabled]="busy() || reportBody().trim() === ''"
+        >
+          Submit report
+        </button>
+      </p>
+    }
+
+    @case ('done') {
+      <h1>Done</h1>
+      <p>Your report has been filed and the visit is complete. Thank you.</p>
+      <p>You can close this page.</p>
+    }
+  }
+</main>

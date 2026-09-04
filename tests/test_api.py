@@ -495,6 +495,38 @@ async def test_a_ping_racing_a_seal_loses_and_leaves_no_row(
     assert await stored_pings(db, visit) == []
 
 
+# ---------------------------------------------------------------- the landing page (issue 07)
+
+
+async def test_assignment_details_are_the_terms_and_nothing_judged(
+    client: AsyncClient, db: AsyncSession
+) -> None:
+    """What the participant's landing page reads: the task's terms, no verdict, no trail."""
+    assignment = await make_assignment(db)
+
+    response = await client.get(f"/api/assignments/{assignment.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "id": str(assignment.id),
+        "business_name": "Northwind Coffee",
+        "participant_name": "Sam Okonjo",
+        "state": AssignmentState.ASSIGNED.value,
+        "deadline_at": body["deadline_at"],
+        "min_duration_s": assignment.min_duration_s,
+        "report_deadline_s": assignment.report_deadline_s,
+    }
+    assert datetime.fromisoformat(body["deadline_at"]) == assignment.deadline_at
+
+
+async def test_assignment_details_for_an_unknown_assignment_are_404(client: AsyncClient) -> None:
+    response = await client.get(f"/api/assignments/{uuid4()}")
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["reason"] == Reason.NOT_FOUND
+
+
 # ---------------------------------------------------------------- starting a visit
 
 

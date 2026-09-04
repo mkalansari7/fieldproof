@@ -1,7 +1,7 @@
 # fieldproof frontend
 
 The participant flow (issue 07). Angular 21, standalone components, zoneless,
-no component library: unstyled semantic HTML on purpose.
+no component library: semantic HTML and one small stylesheet.
 
 ## Run
 
@@ -25,13 +25,26 @@ Upgrading Angular means upgrading Node first.
 
 ## API base URL
 
-`ApiService` calls `http://<hostname of this page>:8000` by default, so a phone
-that loaded the page from the Mac's LAN address talks to the API on the same
-address. Provide `API_BASE_URL` in `app.config.ts` to point elsewhere.
+The page calls `/api/...` on its own origin, and the dev server proxies that
+to `http://localhost:8000` (`proxy.conf.json`, wired in `angular.json`). So a
+phone that loaded the page over the self-signed HTTPS talks to the API through
+the same connection, and the browser never sees a plain-HTTP request from an
+HTTPS page, which it would block as mixed content. Run the API on the Mac
+before `npm start`. To call an API elsewhere, provide `API_BASE_URL` in
+`app.config.ts`.
 
 ## Layout
 
-- `src/app/api.service.ts`: start / ping / end / report, typed to mirror the
-  response models in `src/fieldproof/api.py`.
+- `src/app/api.service.ts`: assignment / start / ping / end / report, typed
+  to mirror the response models in `src/fieldproof/api.py`, plus `apiError`
+  for reading the `{reason, message}` body off a failed request.
 - `src/app/app.routes.ts`: `/a/:assignmentId` is the only real route.
-- `src/app/assignment-landing/`: screen 1. Still scaffolding.
+- `src/app/participant-flow/`: the whole participant flow in one component,
+  landing → consent → active → closed | report → done (spec.md §8). The
+  interval, the Wake Lock and the terminal 409 handler live here.
+- `src/styles.css`: the one stylesheet.
+
+## Not tested
+
+No component tests, per the test plan: a broken screen is loud in the demo.
+The API endpoints the flow calls are tested in `tests/test_api.py`.
