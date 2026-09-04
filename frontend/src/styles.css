@@ -117,25 +117,27 @@ thead th {
   border-bottom-width: 2px;
 }
 
-th[scope='rowgroup'] {
-  padding-top: 1.25rem;
-  font-weight: 400;
-  background: rgb(127 127 127 / 0.1);
+/* One section per assignment: a heading, a state badge, the facts, its attempts. */
+section.assignment {
+  margin: 2rem 0;
 }
 
-/* The assignment header row: a heading, a state badge, then the facts. */
-th.assignment h2 {
+section.assignment h2 {
   margin: 0 0 0.35rem;
-  font-size: 1.05rem;
+  font-size: 1.15rem;
 }
 
-th.assignment .participant {
+section.assignment .participant {
   font-weight: 400;
   opacity: 0.8;
 }
 
-th.assignment .participant::before {
+section.assignment .participant::before {
   content: '· ';
+}
+
+section.assignment table {
+  margin-top: 0.75rem;
 }
 
 .badge {

@@ -18,91 +18,87 @@
     <p>No assignments yet.</p>
   }
 
-  @if (assignments().length > 0) {
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">Attempt</th>
-          <th scope="col">Visit</th>
-          <th scope="col">Started</th>
-          <th scope="col">Since</th>
-          <th scope="col">Verdict</th>
-          <th scope="col">Inside</th>
-          <th scope="col">Outside</th>
-          <th scope="col">Dwell</th>
-          <th scope="col">Pings</th>
-          <th scope="col">Duration</th>
-          <th scope="col">Config</th>
-        </tr>
-      </thead>
-      @for (a of assignments(); track a.id) {
-        <tbody>
-          <tr>
-            <th scope="rowgroup" colspan="11" class="assignment">
-              <h2>
-                {{ a.business_name }}
-                <span class="participant">{{ a.participant_name }}</span>
-                <span class="badge">{{ a.state }}</span>
-              </h2>
-              <dl class="facts">
-                @if (a.at; as at) {
-                  <div>
-                    <dt>{{ a.state.toLowerCase() }} since</dt>
-                    <dd>{{ at | date: 'medium' }}</dd>
-                  </div>
+  @for (a of assignments(); track a.id) {
+    <section class="assignment" [attr.aria-labelledby]="'assignment-' + a.id">
+      <h2 [id]="'assignment-' + a.id">
+        {{ a.business_name }}
+        <span class="participant">{{ a.participant_name }}</span>
+        <span class="badge">{{ a.state }}</span>
+      </h2>
+      <dl class="facts">
+        @if (a.at; as at) {
+          <div>
+            <dt>{{ a.state.toLowerCase() }} since</dt>
+            <dd>{{ at | date: 'medium' }}</dd>
+          </div>
+        }
+        <div>
+          <dt>Start by</dt>
+          <dd>{{ a.deadline_at | date: 'medium' }}</dd>
+        </div>
+        <div>
+          <dt>Terms</dt>
+          <dd>
+            at least {{ a.min_duration_s / 60 | number: '1.0-0' }} min within
+            {{ a.radius_m | number: '1.0-0' }} m
+          </dd>
+        </div>
+        <div>
+          <dt>Attempts</dt>
+          <dd>{{ a.visits.length }}</dd>
+        </div>
+      </dl>
+
+      @if (a.visits.length === 0) {
+        <p>No attempts yet.</p>
+      } @else {
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Attempt</th>
+              <th scope="col">Visit</th>
+              <th scope="col">Started</th>
+              <th scope="col">Since</th>
+              <th scope="col">Verdict</th>
+              <th scope="col">Inside</th>
+              <th scope="col">Outside</th>
+              <th scope="col">Dwell</th>
+              <th scope="col">Pings</th>
+              <th scope="col">Duration</th>
+              <th scope="col">Config</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (v of a.visits; track v.id; let n = $index) {
+              <tr>
+                <td>{{ n + 1 }}</td>
+                <td>{{ v.state }}</td>
+                <td>{{ v.started_at | date: 'medium' }}</td>
+                <td>{{ v.at | date: 'medium' }}</td>
+                @if (v.verdict; as verdict) {
+                  <td>
+                    <strong>{{ verdict.verdict }}</strong>
+                  </td>
+                  <td>{{ verdict.inside_s / 60 | number: '1.0-1' }} min</td>
+                  <td>{{ verdict.outside_s / 60 | number: '1.0-1' }} min</td>
+                  <td>{{ verdict.dwell_ratio | percent: '1.0-0' }}</td>
+                  <td>{{ verdict.conclusive_pings }} of {{ verdict.total_pings }}</td>
+                  <td>{{ verdict.visit_duration_s / 60 | number: '1.0-1' }} min</td>
+                  <td>{{ verdict.scoring_config_version }}</td>
+                } @else {
+                  <td colspan="7">
+                    @if (v.state === 'COMPLETED') {
+                      No verdict stored.
+                    } @else {
+                      —
+                    }
+                  </td>
                 }
-                <div>
-                  <dt>Start by</dt>
-                  <dd>{{ a.deadline_at | date: 'medium' }}</dd>
-                </div>
-                <div>
-                  <dt>Terms</dt>
-                  <dd>
-                    at least {{ a.min_duration_s / 60 | number: '1.0-0' }} min within
-                    {{ a.radius_m | number: '1.0-0' }} m
-                  </dd>
-                </div>
-                <div>
-                  <dt>Attempts</dt>
-                  <dd>{{ a.visits.length }}</dd>
-                </div>
-              </dl>
-            </th>
-          </tr>
-          @for (v of a.visits; track v.id; let n = $index) {
-            <tr>
-              <td>{{ n + 1 }}</td>
-              <td>{{ v.state }}</td>
-              <td>{{ v.started_at | date: 'medium' }}</td>
-              <td>{{ v.at | date: 'medium' }}</td>
-              @if (v.verdict; as verdict) {
-                <td>
-                  <strong>{{ verdict.verdict }}</strong>
-                </td>
-                <td>{{ verdict.inside_s / 60 | number: '1.0-1' }} min</td>
-                <td>{{ verdict.outside_s / 60 | number: '1.0-1' }} min</td>
-                <td>{{ verdict.dwell_ratio | percent: '1.0-0' }}</td>
-                <td>{{ verdict.conclusive_pings }} of {{ verdict.total_pings }}</td>
-                <td>{{ verdict.visit_duration_s / 60 | number: '1.0-1' }} min</td>
-                <td>{{ verdict.scoring_config_version }}</td>
-              } @else {
-                <td colspan="7">
-                  @if (v.state === 'COMPLETED') {
-                    No verdict stored.
-                  } @else {
-                    —
-                  }
-                </td>
-              }
-            </tr>
-          }
-          @if (a.visits.length === 0) {
-            <tr>
-              <td colspan="11">No attempts yet.</td>
-            </tr>
-          }
-        </tbody>
+              </tr>
+            }
+          </tbody>
+        </table>
       }
-    </table>
+    </section>
   }
 </main>
