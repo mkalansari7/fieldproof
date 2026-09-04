@@ -1,0 +1,89 @@
+<main class="dashboard">
+  <h1>Dashboard</h1>
+  <p role="status" aria-live="polite">
+    @switch (connection()) {
+      @case ('connecting') {
+        Connecting…
+      }
+      @case ('live') {
+        Live. Updates arrive as they happen.
+      }
+      @case ('reconnecting') {
+        Connection lost; reconnecting. The table refreshes in full when it returns.
+      }
+    }
+  </p>
+
+  @if (loaded() && assignments().length === 0) {
+    <p>No assignments yet.</p>
+  }
+
+  @if (assignments().length > 0) {
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Attempt</th>
+          <th scope="col">Visit</th>
+          <th scope="col">Started</th>
+          <th scope="col">Since</th>
+          <th scope="col">Verdict</th>
+          <th scope="col">Inside</th>
+          <th scope="col">Outside</th>
+          <th scope="col">Dwell</th>
+          <th scope="col">Pings</th>
+          <th scope="col">Duration</th>
+          <th scope="col">Config</th>
+        </tr>
+      </thead>
+      @for (a of assignments(); track a.id) {
+        <tbody>
+          <tr>
+            <th scope="rowgroup" colspan="11">
+              {{ a.business_name }} — {{ a.participant_name }}: <strong>{{ a.state }}</strong>
+              @if (a.at; as at) {
+                since {{ at | date: 'medium' }}
+              }
+              · start by {{ a.deadline_at | date: 'medium' }} · at least
+              {{ a.min_duration_s / 60 | number: '1.0-0' }} min within
+              {{ a.radius_m | number: '1.0-0' }} m · {{ a.visits.length }} attempt{{
+                a.visits.length === 1 ? '' : 's'
+              }}
+            </th>
+          </tr>
+          @for (v of a.visits; track v.id; let n = $index) {
+            <tr>
+              <td>{{ n + 1 }}</td>
+              <td>{{ v.state }}</td>
+              <td>{{ v.started_at | date: 'medium' }}</td>
+              <td>{{ v.at | date: 'medium' }}</td>
+              @if (v.verdict; as verdict) {
+                <td>
+                  <strong>{{ verdict.verdict }}</strong>
+                </td>
+                <td>{{ verdict.inside_s / 60 | number: '1.0-1' }} min</td>
+                <td>{{ verdict.outside_s / 60 | number: '1.0-1' }} min</td>
+                <td>{{ verdict.dwell_ratio | percent: '1.0-0' }}</td>
+                <td>{{ verdict.conclusive_pings }} of {{ verdict.total_pings }}</td>
+                <td>{{ verdict.visit_duration_s / 60 | number: '1.0-1' }} min</td>
+                <td>{{ verdict.scoring_config_version }}</td>
+              } @else {
+                <td colspan="7">
+                  @if (v.state === 'COMPLETED') {
+                    No verdict stored.
+                  } @else {
+                    —
+                  }
+                </td>
+              }
+            </tr>
+          }
+          @if (a.visits.length === 0) {
+            <tr>
+              <td colspan="11">No attempts yet.</td>
+            </tr>
+          }
+        </tbody>
+      }
+    </table>
+  }
+</main>
